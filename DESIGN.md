@@ -83,7 +83,7 @@ core/parse
 core/match
 core/render
 core/state
-core/path-extract
+core/path_extract
 ```
 
 ## Project Structure
@@ -97,6 +97,8 @@ codex-guidance/
 ├── hooks/
 │   └── hooks.json
 ├── scripts/
+│   ├── shared/
+│   │   └── entry.js
 │   ├── session_start.js
 │   ├── post_tool_use.js
 │   ├── pre_tool_use.js
@@ -108,7 +110,7 @@ codex-guidance/
 │   │   ├── match.ts
 │   │   ├── render.ts
 │   │   ├── state.ts
-│   │   └── path-extract.ts
+│   │   └── path_extract.ts
 │   └── hooks/
 │       ├── session_start.ts
 │       ├── post_tool_use.ts
@@ -344,10 +346,11 @@ The plugin should build TypeScript source into committed or packaged JavaScript 
 Recommended build behavior:
 
 ```text
-src/hooks/session_start.ts   -> scripts/session_start.js
-src/hooks/post_tool_use.ts   -> scripts/post_tool_use.js
-src/hooks/pre_tool_use.ts    -> scripts/pre_tool_use.js
-src/hooks/post_compact.ts    -> scripts/post_compact.js
+src/hooks/shared_entry.ts    -> scripts/shared/entry.js
+src/hooks/session_start.ts   -> scripts/session_start.js wrapper
+src/hooks/post_tool_use.ts   -> scripts/post_tool_use.js wrapper
+src/hooks/pre_tool_use.ts    -> scripts/pre_tool_use.js wrapper
+src/hooks/post_compact.ts    -> scripts/post_compact.js wrapper
 ```
 
 The published plugin should not require Codex to run `tsx`, `ts-node`, or any TypeScript runtime loader.

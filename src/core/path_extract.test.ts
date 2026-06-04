@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { extractToolPaths } from "./path-extract";
+import { extractToolPaths } from "./path_extract";
 
 describe("extractToolPaths", () => {
   it("extracts paths from common Codex read/write/edit tool fields", () => {
@@ -135,7 +135,8 @@ describe("extractToolPaths", () => {
     expect(
       extractToolPaths({
         toolName: "apply_patch",
-        toolInput: "*** Begin Patch\n*** Update File: src/raw.ts\n*** End Patch\n",
+        toolInput:
+          "*** Begin Patch\n*** Update File: src/raw.ts\n*** End Patch\n",
       }),
     ).toEqual([]);
   });
