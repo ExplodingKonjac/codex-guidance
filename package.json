@@ -16,6 +16,7 @@
     "vitest": "^4.1.8"
   },
   "dependencies": {
+    "minimatch": "^10.2.5",
     "yaml": "^2.9.0"
   }
 }
