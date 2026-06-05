@@ -1,3 +1,4 @@
+export * from "./core/cache";
 export * from "./core/discover";
 export * from "./core/match";
 export * from "./core/parse";

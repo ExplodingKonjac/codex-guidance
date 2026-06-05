@@ -2,8 +2,27 @@
   "name": "codex-guidance",
   "version": "0.1.0",
   "description": "Path-scoped Markdown guidance for Codex sessions.",
+  "author": "ExplodingKonjac",
   "license": "MIT",
-  "private": true,
+  "keywords": [
+    "codex",
+    "plugin",
+    "guidance",
+    "hooks",
+    "rules",
+    "context"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "files": [
+    ".codex-plugin/",
+    "hooks/",
+    "scripts/",
+    "README.md",
+    "LICENSE",
+    "DESIGN.md"
+  ],
   "scripts": {
     "build": "tsc -p tsconfig.build.json && node src/build_hooks.mjs",
     "test": "vitest --passWithNoTests",
