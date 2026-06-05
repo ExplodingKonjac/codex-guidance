@@ -1,7 +1,11 @@
 import { createHash } from "node:crypto";
-import { mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 
+import {
+  GUIDANCE_DATABASE_SCHEMA_VERSION,
+  openGuidanceDatabase,
+  type GuidanceDatabaseOptions,
+} from "./sqlite";
 import type {
   GuidanceDocument,
   GuidanceIssue,
@@ -9,7 +13,7 @@ import type {
   GuidanceSource,
 } from "./types";
 
-export const GUIDANCE_CACHE_VERSION = 1;
+export const GUIDANCE_CACHE_VERSION = GUIDANCE_DATABASE_SCHEMA_VERSION;
 
 export interface GuidanceRootFileMetadata {
   readonly relativePath: string;
@@ -23,12 +27,13 @@ export interface GuidanceRootCachePathOptions {
   readonly root: string;
 }
 
-export interface GuidanceRootCacheReadOptions extends GuidanceRootCachePathOptions {
+export interface GuidanceRootCacheReadOptions
+  extends GuidanceRootCachePathOptions {}
+
+export interface GuidanceRootCacheWriteOptions
+  extends GuidanceRootCacheReadOptions {
   readonly rootTimestamp: string;
   readonly maxBytes: number;
-}
-
-export interface GuidanceRootCacheWriteOptions extends GuidanceRootCacheReadOptions {
   readonly documents: readonly GuidanceDocument[];
   readonly issues: readonly GuidanceIssue[];
 }
@@ -38,8 +43,7 @@ export interface GuidanceRootCacheResult {
   readonly issues: readonly GuidanceIssue[];
 }
 
-interface GuidanceRootCacheEntry extends GuidanceRootCacheResult {
-  readonly version: number;
+interface GuidanceRootCacheRow extends GuidanceRootCacheResult {
   readonly source: GuidanceSource;
   readonly root: string;
   readonly rootTimestamp: string;
@@ -69,100 +73,112 @@ export function createGuidanceRootTimestamp(
   );
 }
 
-export function getGuidanceRootCachePath(
-  options: GuidanceRootCachePathOptions,
-): string {
-  const rootKey = stableHash(
-    JSON.stringify({
-      source: options.source,
-      root: path.resolve(options.root),
-    }),
-  );
-  return path.join(
-    path.resolve(options.pluginDataDir),
-    "cache",
-    "guidance",
-    `${rootKey}.json`,
-  );
-}
-
 export async function readGuidanceRootCache(
-  options: GuidanceRootCacheReadOptions,
+  options: GuidanceRootCacheReadOptions & {
+    readonly rootTimestamp: string;
+    readonly maxBytes: number;
+  },
 ): Promise<GuidanceRootCacheResult | null> {
-  let raw = "";
-  try {
-    raw = await readFile(getGuidanceRootCachePath(options), "utf8");
-  } catch {
-    return null;
-  }
+  return withDatabase(options, (database) => {
+    const row = database
+      .prepare(
+        `
+          SELECT source, root, root_timestamp, max_bytes, documents_json, issues_json
+          FROM guidance_root_cache
+          WHERE source = ? AND root = ?
+        `,
+      )
+      .get(options.source, path.resolve(options.root)) as
+      | {
+          source?: unknown;
+          root?: unknown;
+          root_timestamp?: unknown;
+          max_bytes?: unknown;
+          documents_json?: unknown;
+          issues_json?: unknown;
+        }
+      | undefined;
 
-  try {
-    return normalizeCacheEntry(JSON.parse(raw), options);
-  } catch {
-    return null;
-  }
+    if (row === undefined) {
+      return null;
+    }
+
+    return normalizeCacheRow(
+      {
+        source: row.source,
+        root: row.root,
+        rootTimestamp: row.root_timestamp,
+        maxBytes: row.max_bytes,
+        documents: parseJsonArray(row.documents_json),
+        issues: parseJsonArray(row.issues_json),
+      },
+      options,
+    );
+  });
 }
 
 export async function writeGuidanceRootCache(
   options: GuidanceRootCacheWriteOptions,
 ): Promise<void> {
-  const cachePath = getGuidanceRootCachePath(options);
-  const cacheDir = path.dirname(cachePath);
-  let tempFile: string | null = null;
-
-  try {
-    await mkdir(cacheDir, { recursive: true });
-    tempFile = path.join(
-      cacheDir,
-      `${path.basename(cachePath)}.${process.pid}.${Date.now()}.${Math.random()
-        .toString(16)
-        .slice(2)}.tmp`,
-    );
-    const entry: GuidanceRootCacheEntry = {
-      version: GUIDANCE_CACHE_VERSION,
-      source: options.source,
-      root: path.resolve(options.root),
-      rootTimestamp: options.rootTimestamp,
-      maxBytes: options.maxBytes,
-      documents: options.documents,
-      issues: options.issues,
-    };
-    await writeFile(tempFile, `${JSON.stringify(entry, null, 2)}\n`, "utf8");
-    await rename(tempFile, cachePath);
-  } catch {
-    if (tempFile !== null) {
-      try {
-        await unlink(tempFile);
-      } catch {
-        // Best effort cleanup; cache writes are strictly an optimization.
-      }
-    }
-  }
+  void withDatabase(options, (database) => {
+    database
+      .prepare(
+        `
+          INSERT INTO guidance_root_cache (
+            source,
+            root,
+            root_timestamp,
+            max_bytes,
+            documents_json,
+            issues_json
+          )
+          VALUES (?, ?, ?, ?, ?, ?)
+          ON CONFLICT(source, root) DO UPDATE SET
+            root_timestamp = excluded.root_timestamp,
+            max_bytes = excluded.max_bytes,
+            documents_json = excluded.documents_json,
+            issues_json = excluded.issues_json
+        `,
+      )
+      .run(
+        options.source,
+        path.resolve(options.root),
+        options.rootTimestamp,
+        options.maxBytes,
+        JSON.stringify(options.documents),
+        JSON.stringify(options.issues),
+      );
+    return null;
+  });
 }
 
-function normalizeCacheEntry(
-  value: unknown,
-  options: GuidanceRootCacheReadOptions,
+function normalizeCacheRow(
+  value: {
+    readonly source: unknown;
+    readonly root: unknown;
+    readonly rootTimestamp: unknown;
+    readonly maxBytes: unknown;
+    readonly documents: unknown;
+    readonly issues: unknown;
+  },
+  options: GuidanceRootCacheReadOptions & {
+    readonly rootTimestamp: string;
+    readonly maxBytes: number;
+  },
 ): GuidanceRootCacheResult | null {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) {
-    return null;
-  }
-
-  const payload = value as Record<string, unknown>;
   if (
-    payload.version !== GUIDANCE_CACHE_VERSION ||
-    payload.source !== options.source ||
-    payload.root !== path.resolve(options.root) ||
-    payload.rootTimestamp !== options.rootTimestamp ||
-    payload.maxBytes !== options.maxBytes ||
-    !Array.isArray(payload.documents) ||
-    !Array.isArray(payload.issues)
+    value.source !== options.source ||
+    value.root !== path.resolve(options.root) ||
+    value.rootTimestamp !== options.rootTimestamp ||
+    value.maxBytes !== options.maxBytes ||
+    !Array.isArray(value.documents) ||
+    !Array.isArray(value.issues)
   ) {
     return null;
   }
 
-  const documents = normalizeDocuments(payload.documents, options.source);
-  const issues = normalizeIssues(payload.issues, options.source);
+  const documents = normalizeDocuments(value.documents, options.source);
+  const issues = normalizeIssues(value.issues, options.source);
   if (documents === null || issues === null) {
     return null;
   }
@@ -252,6 +268,38 @@ function normalizePaths(value: unknown): readonly string[] | null | undefined {
     return value;
   }
   return undefined;
+}
+
+function parseJsonArray(value: unknown): unknown {
+  if (typeof value !== "string") {
+    return null;
+  }
+
+  try {
+    return JSON.parse(value) as unknown;
+  } catch {
+    return null;
+  }
+}
+
+function withDatabase<T>(
+  options: GuidanceDatabaseOptions,
+  callback: (database: ReturnType<typeof openGuidanceDatabase>) => T,
+): T | null {
+  let database;
+  try {
+    database = openGuidanceDatabase(options);
+  } catch {
+    return null;
+  }
+
+  try {
+    return callback(database);
+  } catch {
+    return null;
+  } finally {
+    database.close();
+  }
 }
 
 function stableHash(value: string): string {

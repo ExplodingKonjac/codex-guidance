@@ -1,9 +1,12 @@
-import { mkdir, mkdtemp, readFile, readdir, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { DatabaseSync } from "node:sqlite";
 
 import { describe, expect, it } from "vitest";
 
+import { getDatabasePath } from "../core/sqlite";
+import { loadSessionState } from "../core/state";
 import { handlePostCompact } from "./post_compact";
 import { handlePostToolUse } from "./post_tool_use";
 import { handlePreToolUse } from "./pre_tool_use";
@@ -53,6 +56,10 @@ function hookSpecificOutput(stdout: string): Record<string, unknown> {
   return hookOutput(stdout).hookSpecificOutput as Record<string, unknown>;
 }
 
+function openDatabase(pluginDataDir: string): DatabaseSync {
+  return new DatabaseSync(getDatabasePath({ pluginDataDir }));
+}
+
 async function writeGuidance(workspace: Workspace): Promise<void> {
   await writeEnsured(
     path.join(workspace.home, ".codex", "guidance", "preferences.md"),
@@ -89,16 +96,26 @@ describe("hook handlers", () => {
     expect(output.additionalContext).not.toContain("codex:backend.md");
     expect(result.stderr).toBe("user:preferences.md loaded\n");
 
-    const state = JSON.parse(
-      await readFile(
-        path.join(workspace.pluginData, "state", "sessions", "session-1.json"),
-        "utf8",
-      ),
-    );
-    expect(state.loaded["0"]).toEqual(["user:preferences.md"]);
     await expect(
-      readdir(path.join(workspace.pluginData, "cache", "guidance")),
-    ).resolves.toHaveLength(4);
+      loadSessionState({
+        sessionId: "session-1",
+        pluginDataDir: workspace.pluginData,
+      }),
+    ).resolves.toMatchObject({
+      loaded: {
+        "0": ["user:preferences.md"],
+      },
+    });
+
+    const database = openDatabase(workspace.pluginData);
+    try {
+      const cacheRows = database
+        .prepare("SELECT COUNT(*) AS count FROM guidance_root_cache")
+        .get() as { count?: unknown } | undefined;
+      expect(cacheRows?.count).toBe(4);
+    } finally {
+      database.close();
+    }
   });
 
   it("PostToolUse injects matching read guidance once", async () => {
@@ -249,36 +266,44 @@ describe("hook handlers", () => {
     ).resolves.toEqual({ exitCode: 0, stdout: "", stderr: "" });
   });
 
-  it("fails open instead of denying when the state lock cannot be acquired", async () => {
+  it("fails open instead of denying when the SQLite write lock cannot be acquired", async () => {
     const workspace = await tempWorkspace();
     await writeGuidance(workspace);
-    await mkdir(path.join(workspace.pluginData, "state", "sessions"), {
-      recursive: true,
-    });
-    await writeFile(
-      path.join(workspace.pluginData, "state", "sessions", "session-1.lock"),
-      "held",
-      "utf8",
-    );
 
-    const result = await handlePreToolUse(
+    await handleSessionStart(
       payload(workspace, {
-        hook_event_name: "PreToolUse",
-        tool_name: "Edit",
-        tool_input: {
-          file_path: "src/server/api.ts",
-        },
+        hook_event_name: "SessionStart",
       }),
-      {
-        env: {
-          ...env(workspace),
-          CODEX_GUIDANCE_LOCK_TIMEOUT_MS: "10",
-          CODEX_GUIDANCE_LOCK_RETRY_MS: "1",
-        },
-        cwd: workspace.repo,
-      },
+      { env: env(workspace), cwd: workspace.repo },
     );
 
-    expect(result).toEqual({ exitCode: 0, stdout: "", stderr: "" });
+    const holder = openDatabase(workspace.pluginData);
+    try {
+      holder.exec("PRAGMA foreign_keys = ON");
+      holder.exec("BEGIN IMMEDIATE");
+
+      const result = await handlePreToolUse(
+        payload(workspace, {
+          hook_event_name: "PreToolUse",
+          tool_name: "Edit",
+          tool_input: {
+            file_path: "src/server/api.ts",
+          },
+        }),
+        {
+          env: {
+            ...env(workspace),
+            CODEX_GUIDANCE_LOCK_TIMEOUT_MS: "10",
+            CODEX_GUIDANCE_LOCK_RETRY_MS: "1",
+          },
+          cwd: workspace.repo,
+        },
+      );
+
+      expect(result).toEqual({ exitCode: 0, stdout: "", stderr: "" });
+    } finally {
+      holder.exec("ROLLBACK");
+      holder.close();
+    }
   });
 });

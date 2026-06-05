@@ -175,13 +175,13 @@ Only Markdown files are loaded. Oversized files, invalid front matter, and files
 
 ## Discovery Cache
 
-Guidance discovery may cache parsed root results outside the repository:
+Guidance discovery may cache parsed root results outside the repository in SQLite:
 
 ```text
-${PLUGIN_DATA}/cache/guidance/<root-hash>.json
+${PLUGIN_DATA}/db/codex-guidance.sqlite
 ```
 
-Each cache file represents one guidance root and stores the cache format version, source, absolute root path, recursive Markdown metadata signature, max file size, parsed guidance documents, and discovery issues.
+Each cache row represents one guidance root and stores the source, absolute root path, recursive Markdown metadata signature, max file size, parsed guidance documents, and discovery issues.
 
 The recursive metadata signature should include Markdown relative paths, file sizes, and modification times. Non-Markdown files should not invalidate the cache.
 
@@ -237,10 +237,10 @@ codex:backend/api.md loaded
 
 ## Session State
 
-Session state should be saved outside the repository. Location:
+Session state should be saved outside the repository in the same SQLite database:
 
 ```text
-${PLUGIN_DATA}/state/sessions/<session_id>.json
+${PLUGIN_DATA}/db/codex-guidance.sqlite
 ```
 
 The plugin should not write session state into:
@@ -253,57 +253,26 @@ The plugin should not write session state into:
 
 Session state is runtime data, not project configuration.
 
-Use a minimal JSON format:
-
-```json
-{
-  "generation": 0,
-  "loaded": {
-    "0": ["user:preferences.md", "codex:backend/api.md"]
-  }
-}
-```
-
-The only required information is:
+Use two logical tables:
 
 ```text
-generation:
-  Current context generation.
-
-loaded:
-  Guidance IDs already injected in each generation.
+session_state(session_id, generation)
+session_loaded_guidance(session_id, generation, guidance_id)
 ```
+
+The only required information is the current generation and the set of guidance IDs already injected for each generation.
 
 A guidance file is considered already loaded only if its ID appears in `loaded[current generation]`.
 
 ## State Locking
 
-Hooks may run close together, so state updates should use a per-session lock file.
+Hooks may run close together, so state updates should rely on SQLite write locking plus a short busy timeout.
 
-Lock file location:
-
-```text
-${PLUGIN_DATA}/state/sessions/<session_id>.lock
-```
-
-There is no fallback state location when `PLUGIN_DATA` is unavailable.
-
-Recommended behavior:
-
-1. Acquire the per-session lock.
-2. Read the state file.
-3. Apply the state update.
-4. Write the new state to a temporary file.
-5. Atomically rename the temporary file over the state file.
-6. Release the lock.
-
-If the lock cannot be acquired quickly, the plugin should fail open:
+If the database cannot be opened or a write lock cannot be acquired quickly, the plugin should fail open:
 
 - Do not block Codex.
 - Do not inject uncertain or duplicate guidance.
 - Do not deny an edit unless newly matched guidance was successfully loaded and recorded.
-
-State writes should be atomic. Partial state files should not be left behind after crashes.
 
 ## Compact Handling
 
@@ -414,8 +383,8 @@ PostCompact:
   increment generation and reload lazily later
 
 State:
-  minimal per-session JSON under ${PLUGIN_DATA}/state/sessions
-  protected by a per-session lock file
+  persisted in ${PLUGIN_DATA}/db/codex-guidance.sqlite
+  protected by SQLite transactions and busy timeouts
 
 Scripts:
   compiled TypeScript output lives in scripts/

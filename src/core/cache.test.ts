@@ -1,19 +1,12 @@
-import {
-  mkdir,
-  mkdtemp,
-  readFile,
-  readdir,
-  rm,
-  utimes,
-  writeFile,
-} from "node:fs/promises";
+import { mkdir, mkdtemp, rm, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { DatabaseSync } from "node:sqlite";
 
 import { describe, expect, it } from "vitest";
 
-import { getGuidanceRootCachePath } from "./cache";
 import { discoverGuidance, getGuidanceRoots } from "./discover";
+import { getDatabasePath } from "./sqlite";
 
 async function tempWorkspace(): Promise<{
   readonly home: string;
@@ -38,40 +31,6 @@ async function touchFuture(filePath: string, seconds: number): Promise<void> {
   await utimes(filePath, time, time);
 }
 
-async function readCache(
-  workspace: Awaited<ReturnType<typeof tempWorkspace>>,
-  source: "user" | "codex" | "agents" | "claude",
-): Promise<Record<string, unknown>> {
-  const root = guidanceRoot(workspace, source);
-
-  return JSON.parse(
-    await readFile(
-      getGuidanceRootCachePath({
-        pluginDataDir: workspace.pluginData,
-        source: root.source,
-        root: root.root,
-      }),
-      "utf8",
-    ),
-  ) as Record<string, unknown>;
-}
-
-async function writeCache(
-  workspace: Awaited<ReturnType<typeof tempWorkspace>>,
-  source: "user" | "codex" | "agents" | "claude",
-  cache: Record<string, unknown>,
-): Promise<void> {
-  const root = guidanceRoot(workspace, source);
-
-  const cachePath = getGuidanceRootCachePath({
-    pluginDataDir: workspace.pluginData,
-    source: root.source,
-    root: root.root,
-  });
-  await mkdir(path.dirname(cachePath), { recursive: true });
-  await writeFile(cachePath, `${JSON.stringify(cache)}\n`, "utf8");
-}
-
 function guidanceRoot(
   workspace: Awaited<ReturnType<typeof tempWorkspace>>,
   source: "user" | "codex" | "agents" | "claude",
@@ -86,8 +45,94 @@ function guidanceRoot(
   return root;
 }
 
+function openDatabase(pluginDataDir: string): DatabaseSync {
+  return new DatabaseSync(getDatabasePath({ pluginDataDir }));
+}
+
+function readCacheRow(
+  workspace: Awaited<ReturnType<typeof tempWorkspace>>,
+  source: "user" | "codex" | "agents" | "claude",
+): {
+  readonly root_timestamp: string;
+  readonly max_bytes: number;
+  readonly documents_json: string;
+  readonly issues_json: string;
+} {
+  const root = guidanceRoot(workspace, source);
+  const database = openDatabase(workspace.pluginData);
+  try {
+    const row = database
+      .prepare(
+        `
+          SELECT root_timestamp, max_bytes, documents_json, issues_json
+          FROM guidance_root_cache
+          WHERE source = ? AND root = ?
+        `,
+      )
+      .get(root.source, root.root) as
+      | {
+          root_timestamp?: unknown;
+          max_bytes?: unknown;
+          documents_json?: unknown;
+          issues_json?: unknown;
+        }
+      | undefined;
+    if (
+      row === undefined ||
+      typeof row.root_timestamp !== "string" ||
+      typeof row.max_bytes !== "number" ||
+      typeof row.documents_json !== "string" ||
+      typeof row.issues_json !== "string"
+    ) {
+      throw new Error(`missing cache row for ${source}`);
+    }
+    return row as {
+      readonly root_timestamp: string;
+      readonly max_bytes: number;
+      readonly documents_json: string;
+      readonly issues_json: string;
+    };
+  } finally {
+    database.close();
+  }
+}
+
+function writeCachePayload(
+  workspace: Awaited<ReturnType<typeof tempWorkspace>>,
+  source: "user" | "codex" | "agents" | "claude",
+  payload: {
+    readonly documents_json: string;
+    readonly issues_json: string;
+  },
+): void {
+  const root = guidanceRoot(workspace, source);
+  const database = openDatabase(workspace.pluginData);
+  try {
+    const existing = readCacheRow(workspace, source);
+    database
+      .prepare(
+        `
+          UPDATE guidance_root_cache
+          SET documents_json = ?, issues_json = ?
+          WHERE source = ? AND root = ?
+            AND root_timestamp = ? AND max_bytes = ?
+        `,
+      )
+      .run(
+        payload.documents_json,
+        payload.issues_json,
+        root.source,
+        root.root,
+        existing.root_timestamp,
+        existing.max_bytes,
+      );
+  } finally {
+    database.close();
+  }
+}
+
 describe("guidance discovery cache", () => {
-  it("writes one cache entry per guidance root on first discovery", async () => {
+  it("writes one cache row per guidance root on first discovery", async () => {
     const workspace = await tempWorkspace();
     await writeEnsured(
       path.join(workspace.home, ".codex/guidance/preferences.md"),
@@ -100,11 +145,15 @@ describe("guidance discovery cache", () => {
       pluginDataDir: workspace.pluginData,
     });
 
-    expect(
-      (await readdir(path.join(workspace.pluginData, "cache", "guidance")))
-        .filter((name) => name.endsWith(".json"))
-        .sort(),
-    ).toHaveLength(4);
+    const database = openDatabase(workspace.pluginData);
+    try {
+      const row = database
+        .prepare("SELECT COUNT(*) AS count FROM guidance_root_cache")
+        .get() as { count?: unknown } | undefined;
+      expect(row?.count).toBe(4);
+    } finally {
+      database.close();
+    }
   });
 
   it("reuses unchanged root cache and invalidates only the changed root", async () => {
@@ -122,15 +171,18 @@ describe("guidance discovery cache", () => {
       pluginDataDir: workspace.pluginData,
     });
 
-    const userCache = await readCache(workspace, "user");
-    const cachedDocuments = userCache.documents as Array<
+    const userCache = readCacheRow(workspace, "user");
+    const cachedDocuments = JSON.parse(userCache.documents_json) as Array<
       Record<string, unknown>
     >;
     if (cachedDocuments[0] === undefined) {
       throw new Error("expected cached user document");
     }
     cachedDocuments[0].content = "# Cached Preferences";
-    await writeCache(workspace, "user", userCache);
+    writeCachePayload(workspace, "user", {
+      documents_json: JSON.stringify(cachedDocuments),
+      issues_json: userCache.issues_json,
+    });
 
     await writeFile(claudeFile, "# Testing\n\nFresh rules.\n", "utf8");
     await touchFuture(claudeFile, 10);
@@ -214,15 +266,18 @@ describe("guidance discovery cache", () => {
       pluginDataDir: workspace.pluginData,
     });
 
-    const codexCache = await readCache(workspace, "codex");
-    const cachedDocuments = codexCache.documents as Array<
+    const codexCache = readCacheRow(workspace, "codex");
+    const cachedDocuments = JSON.parse(codexCache.documents_json) as Array<
       Record<string, unknown>
     >;
     if (cachedDocuments[0] === undefined) {
       throw new Error("expected cached codex document");
     }
     cachedDocuments[0].content = "# Cached Backend";
-    await writeCache(workspace, "codex", codexCache);
+    writeCachePayload(workspace, "codex", {
+      documents_json: JSON.stringify(cachedDocuments),
+      issues_json: codexCache.issues_json,
+    });
 
     await writeEnsured(
       path.join(workspace.repo, ".codex/guidance/notes.txt"),
@@ -240,7 +295,7 @@ describe("guidance discovery cache", () => {
     ]);
   });
 
-  it("falls back to fresh discovery for corrupted and stale cache files", async () => {
+  it("falls back to fresh discovery for corrupted and stale cache rows", async () => {
     const workspace = await tempWorkspace();
     await writeEnsured(
       path.join(workspace.home, ".codex/guidance/preferences.md"),
@@ -252,8 +307,14 @@ describe("guidance discovery cache", () => {
       pluginDataDir: workspace.pluginData,
     });
 
-    const userCache = await readCache(workspace, "user");
-    await writeCache(workspace, "user", { ...userCache, version: 0 });
+    const userRoot = guidanceRoot(workspace, "user");
+    const database = openDatabase(workspace.pluginData);
+    try {
+      database.exec("PRAGMA user_version = 999");
+    } finally {
+      database.close();
+    }
+
     let result = await discoverGuidance({
       homeDir: workspace.home,
       repoRoot: workspace.repo,
@@ -261,16 +322,22 @@ describe("guidance discovery cache", () => {
     });
     expect(result.documents[0]?.content).toBe("# Preferences");
 
-    const root = guidanceRoot(workspace, "user");
-    await writeFile(
-      getGuidanceRootCachePath({
-        pluginDataDir: workspace.pluginData,
-        source: root.source,
-        root: root.root,
-      }),
-      "{not json",
-      "utf8",
-    );
+    const repaired = openDatabase(workspace.pluginData);
+    try {
+      repaired.exec("PRAGMA user_version = 1");
+      repaired
+        .prepare(
+          `
+            UPDATE guidance_root_cache
+            SET documents_json = ?, issues_json = ?
+            WHERE source = ? AND root = ?
+          `,
+        )
+        .run("{not json", "[]", userRoot.source, userRoot.root);
+    } finally {
+      repaired.close();
+    }
+
     result = await discoverGuidance({
       homeDir: workspace.home,
       repoRoot: workspace.repo,
@@ -293,13 +360,18 @@ describe("guidance discovery cache", () => {
       maxBytes: 16,
     });
 
-    const claudeCache = await readCache(workspace, "claude");
-    const cachedIssues = claudeCache.issues as Array<Record<string, unknown>>;
+    const claudeCache = readCacheRow(workspace, "claude");
+    const cachedIssues = JSON.parse(claudeCache.issues_json) as Array<
+      Record<string, unknown>
+    >;
     if (cachedIssues[0] === undefined) {
       throw new Error("expected cached claude issue");
     }
     cachedIssues[0].message = "cached oversized issue";
-    await writeCache(workspace, "claude", claudeCache);
+    writeCachePayload(workspace, "claude", {
+      documents_json: claudeCache.documents_json,
+      issues_json: JSON.stringify(cachedIssues),
+    });
 
     const result = await discoverGuidance({
       homeDir: workspace.home,
@@ -330,10 +402,10 @@ describe("guidance discovery cache", () => {
       pluginDataDir: workspace.pluginData,
     });
 
-    const userCache = await readCache(workspace, "user");
-    await writeCache(workspace, "user", {
-      ...userCache,
-      documents: [{ source: "user", paths: 7 }],
+    const userCache = readCacheRow(workspace, "user");
+    writeCachePayload(workspace, "user", {
+      documents_json: JSON.stringify([{ source: "user", paths: 7 }]),
+      issues_json: userCache.issues_json,
     });
     let result = await discoverGuidance({
       homeDir: workspace.home,
@@ -342,9 +414,11 @@ describe("guidance discovery cache", () => {
     });
     expect(result.documents[0]?.content).toBe("# Preferences");
 
-    await writeCache(workspace, "user", {
-      ...userCache,
-      issues: [{ source: "user", reason: "not-real", message: "bad" }],
+    writeCachePayload(workspace, "user", {
+      documents_json: userCache.documents_json,
+      issues_json: JSON.stringify([
+        { source: "user", reason: "not-real", message: "bad" },
+      ]),
     });
     result = await discoverGuidance({
       homeDir: workspace.home,
@@ -354,7 +428,7 @@ describe("guidance discovery cache", () => {
     expect(result.documents[0]?.content).toBe("# Preferences");
   });
 
-  it("returns fresh discovery when cache cannot be written or PLUGIN_DATA is absent", async () => {
+  it("returns fresh discovery when the database path is unusable or PLUGIN_DATA is absent", async () => {
     const workspace = await tempWorkspace();
     await writeEnsured(
       path.join(workspace.home, ".codex/guidance/preferences.md"),

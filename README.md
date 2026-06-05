@@ -10,7 +10,7 @@ It provides Claude Code-style path-scoped rules, but uses the name `guidance` to
 - Loads path-scoped guidance after matching file reads.
 - Loads path-scoped guidance before matching edits, denies the first edit, and asks Codex to retry after seeing the guidance.
 - Resets loaded guidance state after compaction so guidance can be reloaded for the next context generation.
-- Caches parsed guidance per root under `PLUGIN_DATA` for faster repeated hook runs.
+- Stores session state and guidance cache in a SQLite database under `PLUGIN_DATA` for faster repeated hook runs and safer concurrent access.
 
 ## Guidance Locations
 
@@ -53,21 +53,17 @@ Only the `paths` front matter field is supported. Front matter is stripped befor
 
 ## Runtime Data
 
-Session state is stored outside the repository:
+Runtime storage is kept outside the repository in one SQLite database:
 
 ```text
-${PLUGIN_DATA}/state/sessions/<session_id>.json
-```
-
-Guidance discovery cache is stored outside the repository:
-
-```text
-${PLUGIN_DATA}/cache/guidance/<root-hash>.json
+${PLUGIN_DATA}/db/codex-guidance.sqlite
 ```
 
 The plugin does not write runtime state into `.codex/`, `.agents/`, or `.claude/` inside the repository.
 
 ## Development
+
+Node.js 22.17 or newer is required because the plugin uses the built-in `node:sqlite` module.
 
 Install dependencies:
 
