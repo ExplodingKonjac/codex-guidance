@@ -76,7 +76,10 @@ export function isReadTool(toolName: string | undefined): boolean {
     return false;
   }
   const normalized = toolName.toLowerCase();
-  return normalized === "read" || normalized.includes("read_file");
+  if (normalized === "bash" || normalized.includes("bash")) {
+    return false;
+  }
+  return normalized === "read" || normalized.includes("read");
 }
 
 export function isEditTool(toolName: string | undefined): boolean {

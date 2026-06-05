@@ -1,18 +1,9 @@
-import { mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
-import path from "node:path";
-
+import { openGuidanceDatabase } from "./sqlite";
 import type { GuidanceDocument } from "./types";
 
 export interface SessionState {
   readonly generation: number;
   readonly loaded: Readonly<Record<string, readonly string[]>>;
-}
-
-export interface StatePaths {
-  readonly sessionId: string;
-  readonly stateDir: string;
-  readonly stateFile: string;
-  readonly lockFile: string;
 }
 
 export interface StateOptions {
@@ -44,8 +35,7 @@ export type StateUpdateResult =
       readonly reason: "lock-timeout" | "write-error";
     };
 
-const DEFAULT_LOCK_TIMEOUT_MS = 250;
-const DEFAULT_LOCK_RETRY_MS = 10;
+const DEFAULT_BUSY_TIMEOUT_MS = 250;
 
 function defaultState(): SessionState {
   return {
@@ -69,191 +59,12 @@ function sanitizeSessionId(sessionId: string): string {
   return normalized.length > 0 ? normalized : "session";
 }
 
-function resolvePluginDataDir(options: StateOptions): string {
-  if (
-    options.pluginDataDir !== undefined &&
-    options.pluginDataDir.trim().length > 0
-  ) {
-    return path.resolve(options.pluginDataDir);
-  }
-
-  const envPluginData = process.env.PLUGIN_DATA;
-  if (envPluginData !== undefined && envPluginData.trim().length > 0) {
-    return path.resolve(envPluginData);
-  }
-
-  throw new Error("PLUGIN_DATA is required for codex-guidance session state.");
-}
-
-export function getStatePaths(options: StateOptions): StatePaths {
-  const sessionId = sanitizeSessionId(options.sessionId);
-  const stateDir = path.join(
-    resolvePluginDataDir(options),
-    "state",
-    "sessions",
-  );
-  return {
-    sessionId,
-    stateDir,
-    stateFile: path.join(stateDir, `${sessionId}.json`),
-    lockFile: path.join(stateDir, `${sessionId}.lock`),
-  };
-}
-
-function normalizeState(value: unknown): SessionState | null {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) {
-    return null;
-  }
-
-  const payload = value as Record<string, unknown>;
-  if (
-    !Number.isInteger(payload.generation) ||
-    (payload.generation as number) < 0
-  ) {
-    return null;
-  }
-
-  if (
-    typeof payload.loaded !== "object" ||
-    payload.loaded === null ||
-    Array.isArray(payload.loaded)
-  ) {
-    return null;
-  }
-
-  const loaded: Record<string, readonly string[]> = {};
-  for (const [generation, ids] of Object.entries(payload.loaded)) {
-    if (!/^\d+$/.test(generation)) {
-      return null;
-    }
-    if (
-      !Array.isArray(ids) ||
-      !ids.every((id) => typeof id === "string" && id.trim().length > 0)
-    ) {
-      return null;
-    }
-    loaded[generation] = [...new Set(ids.map((id) => id.trim()))];
-  }
-
-  const currentGeneration = String(payload.generation);
-  if (loaded[currentGeneration] === undefined) {
-    loaded[currentGeneration] = [];
-  }
-
-  return {
-    generation: payload.generation as number,
-    loaded,
-  };
-}
-
-async function readExistingState(stateFile: string): Promise<SessionState> {
-  let raw = "";
-  try {
-    raw = await readFile(stateFile, "utf8");
-  } catch {
-    return defaultState();
-  }
-
-  try {
-    return normalizeState(JSON.parse(raw)) ?? defaultState();
-  } catch {
-    return defaultState();
-  }
-}
-
 export async function loadSessionState(
   options: StateOptions,
 ): Promise<SessionState> {
-  return readExistingState(getStatePaths(options).stateFile);
-}
-
-async function sleep(ms: number): Promise<void> {
-  await new Promise((resolve) => {
-    setTimeout(resolve, ms);
-  });
-}
-
-async function acquireLock(
-  lockFile: string,
-  timeoutMs: number,
-  retryMs: number,
-): Promise<boolean> {
-  const start = Date.now();
-  while (true) {
-    try {
-      await writeFile(lockFile, `${process.pid}\n`, { flag: "wx" });
-      return true;
-    } catch {
-      if (Date.now() - start >= timeoutMs) {
-        return false;
-      }
-      await sleep(retryMs);
-    }
-  }
-}
-
-async function releaseLock(lockFile: string): Promise<void> {
-  try {
-    await unlink(lockFile);
-  } catch {
-    // Fail open: a missing lock should not break the hook flow.
-  }
-}
-
-async function writeStateAtomically(
-  paths: StatePaths,
-  state: SessionState,
-): Promise<void> {
-  await mkdir(paths.stateDir, { recursive: true });
-  const tempFile = path.join(
-    paths.stateDir,
-    `${paths.sessionId}.${process.pid}.${Date.now()}.${Math.random()
-      .toString(16)
-      .slice(2)}.tmp`,
+  return withDatabase(options, (database) =>
+    readSessionState(database, sanitizeSessionId(options.sessionId)),
   );
-
-  try {
-    await writeFile(tempFile, `${JSON.stringify(state, null, 2)}\n`, "utf8");
-    await rename(tempFile, paths.stateFile);
-  } catch (error) {
-    try {
-      await unlink(tempFile);
-    } catch {
-      // Best effort cleanup; preserve the original write error.
-    }
-    throw error;
-  }
-}
-
-async function updateSessionState(
-  options: StateUpdateOptions,
-  update: (state: SessionState) => SessionState,
-): Promise<StateUpdateResult> {
-  const paths = getStatePaths(options);
-  await mkdir(paths.stateDir, { recursive: true });
-
-  const acquired = await acquireLock(
-    paths.lockFile,
-    options.lockTimeoutMs ?? DEFAULT_LOCK_TIMEOUT_MS,
-    options.lockRetryMs ?? DEFAULT_LOCK_RETRY_MS,
-  );
-  if (!acquired) {
-    return { ok: false, reason: "lock-timeout" };
-  }
-
-  try {
-    const nextState = update(await readExistingState(paths.stateFile));
-    await writeStateAtomically(paths, nextState);
-    return { ok: true, state: nextState };
-  } catch {
-    return { ok: false, reason: "write-error" };
-  } finally {
-    await releaseLock(paths.lockFile);
-  }
-}
-
-function currentLoadedIds(state: SessionState): readonly string[] {
-  return state.loaded[String(state.generation)] ?? [];
 }
 
 export function selectUnloadedGuidance(
@@ -266,37 +77,225 @@ export function selectUnloadedGuidance(
 export async function markGuidanceLoaded(
   options: MarkGuidanceLoadedOptions,
 ): Promise<StateUpdateResult> {
-  return updateSessionState(options, (state) => {
-    const generation = String(state.generation);
-    const loaded = state.loaded[generation] ?? [];
-    return {
-      generation: state.generation,
-      loaded: {
-        ...state.loaded,
-        [generation]: [
-          ...new Set([
-            ...loaded,
-            ...options.guidanceIds
-              .map((id) => id.trim())
-              .filter((id) => id.length > 0),
-          ]),
-        ],
-      },
-    };
+  const guidanceIds = [...new Set(normalizeGuidanceIds(options.guidanceIds))];
+  return withWriteDatabase(options, (database, sessionId) => {
+    database.exec("BEGIN IMMEDIATE");
+    try {
+      const generation = ensureSession(database, sessionId);
+      const insert = database.prepare(
+        `
+          INSERT OR IGNORE INTO session_loaded_guidance (
+            session_id,
+            generation,
+            guidance_id
+          )
+          VALUES (?, ?, ?)
+        `,
+      );
+      for (const guidanceId of guidanceIds) {
+        insert.run(sessionId, generation, guidanceId);
+      }
+      database.exec("COMMIT");
+      return {
+        ok: true,
+        state: readSessionState(database, sessionId),
+      };
+    } catch (error) {
+      rollbackQuietly(database);
+      return failureFromError(error);
+    }
   });
 }
 
 export async function compactSessionState(
   options: StateUpdateOptions,
 ): Promise<StateUpdateResult> {
-  return updateSessionState(options, (state) => {
-    const generation = state.generation + 1;
-    return {
-      generation,
-      loaded: {
-        ...state.loaded,
-        [String(generation)]: [],
-      },
-    };
+  return withWriteDatabase(options, (database, sessionId) => {
+    database.exec("BEGIN IMMEDIATE");
+    try {
+      const generation = ensureSession(database, sessionId) + 1;
+      database
+        .prepare(
+          `
+            UPDATE session_state
+            SET generation = ?
+            WHERE session_id = ?
+          `,
+        )
+        .run(generation, sessionId);
+      database.exec("COMMIT");
+      return {
+        ok: true,
+        state: readSessionState(database, sessionId),
+      };
+    } catch (error) {
+      rollbackQuietly(database);
+      return failureFromError(error);
+    }
   });
+}
+
+function currentLoadedIds(state: SessionState): readonly string[] {
+  return state.loaded[String(state.generation)] ?? [];
+}
+
+function normalizeGuidanceIds(guidanceIds: readonly string[]): readonly string[] {
+  return guidanceIds
+    .map((id) => id.trim())
+    .filter((id) => id.length > 0);
+}
+
+function ensureSession(
+  database: ReturnType<typeof openGuidanceDatabase>,
+  sessionId: string,
+): number {
+  database
+    .prepare(
+      `
+        INSERT INTO session_state (session_id, generation)
+        VALUES (?, 0)
+        ON CONFLICT(session_id) DO NOTHING
+      `,
+    )
+    .run(sessionId);
+
+  const row = database
+    .prepare(
+      `
+        SELECT generation
+        FROM session_state
+        WHERE session_id = ?
+      `,
+    )
+    .get(sessionId) as { generation?: unknown } | undefined;
+
+  return typeof row?.generation === "number" ? row.generation : 0;
+}
+
+function readSessionState(
+  database: ReturnType<typeof openGuidanceDatabase>,
+  sessionId: string,
+): SessionState {
+  const row = database
+    .prepare(
+      `
+        SELECT generation
+        FROM session_state
+        WHERE session_id = ?
+      `,
+    )
+    .get(sessionId) as { generation?: unknown } | undefined;
+
+  const generation = typeof row?.generation === "number" ? row.generation : 0;
+  const loadedRows = database
+    .prepare(
+      `
+        SELECT generation, guidance_id
+        FROM session_loaded_guidance
+        WHERE session_id = ?
+        ORDER BY generation ASC, guidance_id ASC
+      `,
+    )
+    .all(sessionId) as Array<{ generation?: unknown; guidance_id?: unknown }>;
+
+  const loaded: Record<string, string[]> = {};
+  for (const loadedRow of loadedRows) {
+    if (
+      typeof loadedRow.generation !== "number" ||
+      typeof loadedRow.guidance_id !== "string"
+    ) {
+      continue;
+    }
+
+    const key = String(loadedRow.generation);
+    const entries = loaded[key] ?? [];
+    entries.push(loadedRow.guidance_id);
+    loaded[key] = entries;
+  }
+
+  if (loaded[String(generation)] === undefined) {
+    loaded[String(generation)] = [];
+  }
+
+  return { generation, loaded };
+}
+
+function rollbackQuietly(
+  database: ReturnType<typeof openGuidanceDatabase>,
+): void {
+  try {
+    database.exec("ROLLBACK");
+  } catch {
+    // Best effort cleanup after a failed write transaction.
+  }
+}
+
+function failureFromError(error: unknown): StateUpdateResult {
+  return isBusyError(error)
+    ? { ok: false, reason: "lock-timeout" }
+    : { ok: false, reason: "write-error" };
+}
+
+function isBusyError(error: unknown): boolean {
+  if (!(error instanceof Error)) {
+    return false;
+  }
+
+  return (
+    error.message.includes("database is locked") ||
+    error.message.includes("SQLITE_BUSY")
+  );
+}
+
+function withDatabase<T>(
+  options: StateOptions,
+  callback: (database: ReturnType<typeof openGuidanceDatabase>) => T,
+): T | SessionState {
+  let database;
+  try {
+    database = openGuidanceDatabase({
+      busyTimeoutMs: DEFAULT_BUSY_TIMEOUT_MS,
+      ...(options.pluginDataDir === undefined
+        ? {}
+        : { pluginDataDir: options.pluginDataDir }),
+    });
+  } catch {
+    return defaultState();
+  }
+
+  try {
+    return callback(database);
+  } catch {
+    return defaultState();
+  } finally {
+    database.close();
+  }
+}
+
+function withWriteDatabase(
+  options: StateUpdateOptions,
+  callback: (
+    database: ReturnType<typeof openGuidanceDatabase>,
+    sessionId: string,
+  ) => StateUpdateResult,
+): StateUpdateResult {
+  let database;
+  try {
+    database = openGuidanceDatabase({
+      busyTimeoutMs: options.lockTimeoutMs ?? DEFAULT_BUSY_TIMEOUT_MS,
+      ...(options.pluginDataDir === undefined
+        ? {}
+        : { pluginDataDir: options.pluginDataDir }),
+    });
+  } catch (error) {
+    return failureFromError(error);
+  }
+
+  try {
+    return callback(database, sanitizeSessionId(options.sessionId));
+  } catch (error) {
+    return failureFromError(error);
+  } finally {
+    database.close();
+  }
 }

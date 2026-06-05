@@ -1,12 +1,13 @@
-import { mkdir, mkdtemp, readdir, readFile, writeFile } from "node:fs/promises";
+import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { DatabaseSync } from "node:sqlite";
 
 import { describe, expect, it } from "vitest";
 
+import { getDatabasePath } from "./sqlite";
 import {
   compactSessionState,
-  getStatePaths,
   loadSessionState,
   markGuidanceLoaded,
   selectUnloadedGuidance,
@@ -29,56 +30,9 @@ function doc(id: string): GuidanceDocument {
   };
 }
 
-describe("getStatePaths", () => {
-  it("uses PLUGIN_DATA for session state and lock files", async () => {
-    const pluginDataDir = await tempDir("codex-guidance-plugin-data-");
-
-    expect(
-      getStatePaths({
-        sessionId: "session-1",
-        pluginDataDir,
-      }),
-    ).toEqual({
-      sessionId: "session-1",
-      stateDir: path.join(pluginDataDir, "state", "sessions"),
-      stateFile: path.join(
-        pluginDataDir,
-        "state",
-        "sessions",
-        "session-1.json",
-      ),
-      lockFile: path.join(pluginDataDir, "state", "sessions", "session-1.lock"),
-    });
-  });
-
-  it("sanitizes session IDs when PLUGIN_DATA is available", async () => {
-    const pluginDataDir = await tempDir("codex-guidance-plugin-data-");
-
-    const paths = getStatePaths({
-      sessionId: "../unsafe/session",
-      pluginDataDir,
-    });
-
-    expect(paths.sessionId).toBe("unsafe-session");
-    expect(paths.stateDir).toBe(path.join(pluginDataDir, "state", "sessions"));
-  });
-
-  it("throws when PLUGIN_DATA is unavailable", () => {
-    const previousPluginData = process.env.PLUGIN_DATA;
-    delete process.env.PLUGIN_DATA;
-    try {
-      expect(() => getStatePaths({ sessionId: "session-1" })).toThrow(
-        "PLUGIN_DATA is required",
-      );
-    } finally {
-      if (previousPluginData === undefined) {
-        delete process.env.PLUGIN_DATA;
-      } else {
-        process.env.PLUGIN_DATA = previousPluginData;
-      }
-    }
-  });
-});
+function openDatabase(pluginDataDir: string): DatabaseSync {
+  return new DatabaseSync(getDatabasePath({ pluginDataDir }));
+}
 
 describe("session state", () => {
   it("creates a default state for new sessions", async () => {
@@ -95,6 +49,41 @@ describe("session state", () => {
         "0": [],
       },
     });
+  });
+
+  it("sanitizes session IDs before storing them in SQLite", async () => {
+    const pluginDataDir = await tempDir("codex-guidance-state-");
+
+    const result = await markGuidanceLoaded({
+      sessionId: "../unsafe/session",
+      pluginDataDir,
+      guidanceIds: ["codex:a.md"],
+    });
+
+    expect(result.ok).toBe(true);
+    const database = openDatabase(pluginDataDir);
+    try {
+      const sessions = database
+        .prepare("SELECT session_id FROM session_state")
+        .all() as Array<{ session_id?: unknown }>;
+      expect(sessions).toEqual([{ session_id: "unsafe-session" }]);
+    } finally {
+      database.close();
+    }
+  });
+
+  it("throws when PLUGIN_DATA is unavailable", () => {
+    const previousPluginData = process.env.PLUGIN_DATA;
+    delete process.env.PLUGIN_DATA;
+    try {
+      expect(() => getDatabasePath({})).toThrow("PLUGIN_DATA is required");
+    } finally {
+      if (previousPluginData === undefined) {
+        delete process.env.PLUGIN_DATA;
+      } else {
+        process.env.PLUGIN_DATA = previousPluginData;
+      }
+    }
   });
 
   it("records loaded guidance only for the current generation", async () => {
@@ -126,7 +115,7 @@ describe("session state", () => {
     });
   });
 
-  it("increments generation during compact and initializes an empty loaded set", async () => {
+  it("increments generation during compact and treats missing current-generation rows as empty", async () => {
     const pluginDataDir = await tempDir("codex-guidance-state-");
     await markGuidanceLoaded({
       sessionId: "compact-session",
@@ -152,9 +141,8 @@ describe("session state", () => {
     });
   });
 
-  it("writes state atomically and leaves no temp files after success", async () => {
+  it("persists state into SQLite without temp-file bookkeeping", async () => {
     const pluginDataDir = await tempDir("codex-guidance-state-");
-    const paths = getStatePaths({ sessionId: "atomic-session", pluginDataDir });
 
     await markGuidanceLoaded({
       sessionId: "atomic-session",
@@ -162,61 +150,72 @@ describe("session state", () => {
       guidanceIds: ["codex:a.md"],
     });
 
-    expect(JSON.parse(await readFile(paths.stateFile, "utf8"))).toEqual({
-      generation: 0,
-      loaded: {
-        "0": ["codex:a.md"],
-      },
-    });
-    expect(
-      (await readdir(paths.stateDir)).filter((name) => name.includes(".tmp")),
-    ).toEqual([]);
-  });
+    const database = openDatabase(pluginDataDir);
+    try {
+      const session = database
+        .prepare(
+          "SELECT generation FROM session_state WHERE session_id = 'atomic-session'",
+        )
+        .get() as { generation?: unknown } | undefined;
+      const loaded = database
+        .prepare(
+          `
+            SELECT guidance_id
+            FROM session_loaded_guidance
+            WHERE session_id = 'atomic-session' AND generation = 0
+          `,
+        )
+        .all() as Array<{ guidance_id?: unknown }>;
 
-  it("recovers safely from corrupted state files", async () => {
-    const pluginDataDir = await tempDir("codex-guidance-state-");
-    const paths = getStatePaths({
-      sessionId: "corrupt-session",
-      pluginDataDir,
-    });
-    await mkdir(paths.stateDir, { recursive: true });
-    await writeFile(paths.stateFile, "{not json", "utf8");
-
-    const result = await markGuidanceLoaded({
-      sessionId: "corrupt-session",
-      pluginDataDir,
-      guidanceIds: ["codex:a.md"],
-    });
-
-    expect(result.ok).toBe(true);
-    if (!result.ok) {
-      throw new Error(result.reason);
+      expect(session).toEqual({ generation: 0 });
+      expect(loaded).toEqual([{ guidance_id: "codex:a.md" }]);
+    } finally {
+      database.close();
     }
-    expect(result.state).toEqual({
+  });
+
+  it("fails open when the database cannot be opened", async () => {
+    const pluginDataDir = await tempDir("codex-guidance-state-");
+
+    const load = await loadSessionState({
+      sessionId: "broken-session",
+      pluginDataDir: path.join(pluginDataDir, "missing", "child"),
+    });
+    expect(load).toEqual({
       generation: 0,
       loaded: {
-        "0": ["codex:a.md"],
+        "0": [],
       },
     });
   });
 
-  it("fails open when the lock cannot be acquired quickly", async () => {
+  it("returns lock-timeout when a write transaction cannot acquire the SQLite lock quickly", async () => {
     const pluginDataDir = await tempDir("codex-guidance-state-");
-    const paths = getStatePaths({ sessionId: "locked-session", pluginDataDir });
-    await mkdir(paths.stateDir, { recursive: true });
-    await writeFile(paths.lockFile, "held", "utf8");
-
-    const result = await markGuidanceLoaded({
+    await markGuidanceLoaded({
       sessionId: "locked-session",
       pluginDataDir,
-      guidanceIds: ["codex:a.md"],
-      lockTimeoutMs: 20,
-      lockRetryMs: 1,
+      guidanceIds: ["codex:init.md"],
     });
 
-    expect(result).toEqual({
-      ok: false,
-      reason: "lock-timeout",
-    });
+    const holder = openDatabase(pluginDataDir);
+    try {
+      holder.exec("BEGIN IMMEDIATE");
+
+      const result = await markGuidanceLoaded({
+        sessionId: "locked-session",
+        pluginDataDir,
+        guidanceIds: ["codex:a.md"],
+        lockTimeoutMs: 20,
+        lockRetryMs: 1,
+      });
+
+      expect(result).toEqual({
+        ok: false,
+        reason: "lock-timeout",
+      });
+    } finally {
+      holder.exec("ROLLBACK");
+      holder.close();
+    }
   });
 });

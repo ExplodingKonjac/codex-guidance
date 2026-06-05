@@ -1,28 +1,19 @@
 {
   "name": "codex-guidance",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Path-scoped Markdown guidance for Codex sessions.",
   "author": {
     "name": "ExplodingKonjac"
   },
   "license": "MIT",
-  "keywords": [
-    "codex",
-    "guidance",
-    "hooks",
-    "rules",
-    "context"
-  ],
+  "keywords": ["codex", "guidance", "hooks", "rules", "context"],
   "interface": {
     "displayName": "Codex Guidance",
     "shortDescription": "Load path-scoped Markdown guidance into Codex.",
     "longDescription": "Codex Guidance injects user and repository Markdown guidance at session start, after matching reads, and before matching edits.",
     "developerName": "ExplodingKonjac",
     "category": "Developer Tools",
-    "capabilities": [
-      "Read",
-      "Write"
-    ],
+    "capabilities": ["Read", "Write"],
     "defaultPrompt": [
       "Use repository guidance before editing matching files.",
       "Load my global Codex guidance for this session.",
