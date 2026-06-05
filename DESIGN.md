@@ -19,9 +19,9 @@ The plugin loads Markdown guidance from:
 
 All directories support subdirectories.
 
-Each Markdown file may contain YAML front matter with only one supported field:
+Each Markdown file may contain a narrow front matter block with only one supported field:
 
-```yaml
+```text
 paths:
   - "src/**/*.ts"
 ```
@@ -88,7 +88,7 @@ core/path_extract
 
 ## Project Structure
 
-Compiled hook scripts should live in `scripts/`.
+Committed runtime hook scripts should live in `scripts/`, with `scripts/hooks/*` serving as the direct hook entrypoints.
 
 ```text
 codex-guidance/
@@ -97,12 +97,13 @@ codex-guidance/
 ├── hooks/
 │   └── hooks.json
 ├── scripts/
-│   ├── shared/
-│   │   └── entry.js
-│   ├── session_start.js
-│   ├── post_tool_use.js
-│   ├── pre_tool_use.js
-│   └── post_compact.js
+│   ├── core/
+│   └── hooks/
+│       ├── common.js
+│       ├── session_start.js
+│       ├── post_tool_use.js
+│       ├── pre_tool_use.js
+│       └── post_compact.js
 ├── src/
 │   ├── core/
 │   │   ├── discover.ts
@@ -121,7 +122,9 @@ codex-guidance/
 
 `src/hooks/*` contains TypeScript source.
 
-`scripts/*` contains compiled JavaScript entrypoints referenced by Codex.
+`scripts/hooks/*` contains committed JavaScript runtime entrypoints referenced by Codex.
+
+`scripts/core/*` and `scripts/hooks/common.js` contain committed compiled runtime support code produced from `src/`.
 
 ## Hook Configuration
 
@@ -131,16 +134,16 @@ Conceptually:
 
 ```text
 SessionStart:
-  ${PLUGIN_ROOT}/scripts/session_start.js
+  ${PLUGIN_ROOT}/scripts/hooks/session_start.js
 
 PostToolUse:
-  ${PLUGIN_ROOT}/scripts/post_tool_use.js
+  ${PLUGIN_ROOT}/scripts/hooks/post_tool_use.js
 
 PreToolUse:
-  ${PLUGIN_ROOT}/scripts/pre_tool_use.js
+  ${PLUGIN_ROOT}/scripts/hooks/pre_tool_use.js
 
 PostCompact:
-  ${PLUGIN_ROOT}/scripts/post_compact.js
+  ${PLUGIN_ROOT}/scripts/hooks/post_compact.js
 ```
 
 This avoids runtime TypeScript execution inside Codex hooks and keeps plugin execution predictable.
@@ -172,6 +175,8 @@ claude:testing.md
 ```
 
 Only Markdown files are loaded. Oversized files, invalid front matter, and files outside configured roots should be skipped safely.
+
+The front matter parser intentionally supports only a top-level `paths` block list of strings. Broader YAML features such as inline arrays, nested objects, anchors, and additional keys are not supported.
 
 ## Discovery Cache
 
@@ -227,7 +232,7 @@ Below are global guidance for this session. You must follow them in later action
 </guidance>
 ```
 
-YAML front matter should not be included in the injected content.
+Front matter should not be included in the injected content.
 
 The plugin should also surface a concise status message:
 
@@ -329,11 +334,12 @@ The plugin should build TypeScript source into committed or packaged JavaScript 
 Recommended build behavior:
 
 ```text
-src/hooks/shared_entry.ts    -> scripts/shared/entry.js
-src/hooks/session_start.ts   -> scripts/session_start.js wrapper
-src/hooks/post_tool_use.ts   -> scripts/post_tool_use.js wrapper
-src/hooks/pre_tool_use.ts    -> scripts/pre_tool_use.js wrapper
-src/hooks/post_compact.ts    -> scripts/post_compact.js wrapper
+src/core/*.ts                -> scripts/core/*.js
+src/hooks/common.ts          -> scripts/hooks/common.js
+src/hooks/session_start.ts   -> scripts/hooks/session_start.js
+src/hooks/post_tool_use.ts   -> scripts/hooks/post_tool_use.js
+src/hooks/pre_tool_use.ts    -> scripts/hooks/pre_tool_use.js
+src/hooks/post_compact.ts    -> scripts/hooks/post_compact.js
 ```
 
 The published plugin should not require Codex to run `tsx`, `ts-node`, or any TypeScript runtime loader.
@@ -388,7 +394,7 @@ State:
 
 Scripts:
   compiled TypeScript output lives in scripts/
-  hooks.json references ${PLUGIN_ROOT}/scripts/...
+  hooks.json references ${PLUGIN_ROOT}/scripts/hooks/...
 
 MCP:
   omitted from MVP

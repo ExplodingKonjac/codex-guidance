@@ -2,7 +2,7 @@ import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "../test_support";
 
 import { parseGuidanceFile } from "./parse";
 
@@ -45,6 +45,28 @@ describe("parseGuidanceFile", () => {
       content: "# API Guidance\n\nUse schemas.",
     });
     expect(result.issue).toBeUndefined();
+  });
+
+  it("accepts quoted and unquoted block-list path items", async () => {
+    const root = await tempRoot();
+    const filePath = await write(
+      root,
+      "quoted.md",
+      "---\npaths:\n  - src/**/*.ts\n  - 'test/**/*.ts'\n  - \"docs/**/*.md\"\n---\n# Quoted\n",
+    );
+
+    const result = await parseGuidanceFile({
+      source: "codex",
+      root,
+      filePath,
+      maxBytes: 1024,
+    });
+
+    expect(result.document?.paths).toEqual([
+      "src/**/*.ts",
+      "test/**/*.ts",
+      "docs/**/*.md",
+    ]);
   });
 
   it("treats files without front matter paths as global guidance", async () => {
@@ -109,6 +131,28 @@ describe("parseGuidanceFile", () => {
     expect(result.issue).toMatchObject({
       filePath,
       reason: "invalid-front-matter",
+    });
+  });
+
+  it("rejects inline-array path syntax to keep front matter narrow", async () => {
+    const root = await tempRoot();
+    const filePath = await write(
+      root,
+      "inline-array.md",
+      '---\npaths: ["src/**/*.ts"]\n---\n# Bad\n',
+    );
+
+    const result = await parseGuidanceFile({
+      source: "claude",
+      root,
+      filePath,
+      maxBytes: 1024,
+    });
+
+    expect(result.document).toBeUndefined();
+    expect(result.issue).toMatchObject({
+      filePath,
+      reason: "invalid-paths-field",
     });
   });
 

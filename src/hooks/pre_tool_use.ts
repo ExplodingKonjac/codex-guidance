@@ -51,4 +51,6 @@ export async function handlePreToolUse(
   );
 }
 
-void runCli;
+if (require.main === module) {
+  void runCli(handlePreToolUse);
+}

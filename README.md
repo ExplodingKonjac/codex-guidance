@@ -51,7 +51,7 @@ Files without front matter are global guidance:
 Use concise explanations and preserve local style.
 ```
 
-Files with `paths` are path-scoped guidance:
+Files with a `paths` front matter block are path-scoped guidance:
 
 ```markdown
 ---
@@ -62,10 +62,10 @@ paths:
 
 # TypeScript
 
-Prefer strict types and focused Vitest coverage.
+Prefer strict types and focused native test coverage.
 ```
 
-Only the `paths` front matter field is supported. Front matter is stripped before guidance is injected.
+Only a narrow `paths` block-list front matter format is supported. The parser accepts unquoted, single-quoted, and double-quoted list items, and rejects broader YAML features such as inline arrays or additional keys. Front matter is stripped before guidance is injected.
 
 ## Development
 
@@ -77,7 +77,7 @@ Install dependencies:
 npm install
 ```
 
-Build compiled hook scripts:
+Build the committed runtime JS under `scripts/`:
 
 ```bash
 npm run build
@@ -87,5 +87,6 @@ Run checks:
 
 ```bash
 npm run typecheck
-npm test -- --run
+npm run build
+npm test
 ```

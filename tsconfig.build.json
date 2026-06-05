@@ -1,14 +1,15 @@
 {
   "extends": "./tsconfig.json",
   "compilerOptions": {
-    "declaration": true,
-    "declarationMap": true,
-    "outDir": "dist",
+    "declaration": false,
+    "sourceMap": false,
+    "outDir": "scripts",
     "rootDir": "src",
-    "sourceMap": true
+    "tsBuildInfoFile": "node_modules/.cache/tsc-build.tsbuildinfo"
   },
   "include": [
-    "src/**/*.ts"
+    "src/core/**/*.ts",
+    "src/hooks/**/*.ts"
   ],
   "exclude": [
     "test/**/*.ts",

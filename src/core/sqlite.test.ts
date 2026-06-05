@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "../test_support";
 
 import { handlePostToolUse } from "../hooks/post_tool_use";
 import { handleSessionStart } from "../hooks/session_start";

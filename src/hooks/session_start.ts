@@ -27,4 +27,6 @@ export async function handleSessionStart(
   return contextResult("SessionStart", renderGlobalGuidance(loaded), loaded);
 }
 
-void runCli;
+if (require.main === module) {
+  void runCli(handleSessionStart);
+}

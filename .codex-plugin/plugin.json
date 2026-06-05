@@ -1,6 +1,6 @@
 {
   "name": "codex-guidance",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Path-scoped Markdown guidance for Codex sessions.",
   "author": {
     "name": "ExplodingKonjac"

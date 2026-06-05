@@ -1,9 +1,10 @@
+import { accessSync } from "node:fs";
 import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "../test_support";
 
 import { getDatabasePath } from "../core/sqlite";
 import { loadSessionState } from "../core/state";
@@ -72,6 +73,43 @@ async function writeGuidance(workspace: Workspace): Promise<void> {
 }
 
 describe("hook handlers", () => {
+  it("keeps the committed script entrypoints wired to the compiled runtime tree", () => {
+    accessSync(path.join(process.cwd(), "scripts", "hooks", "session_start.js"));
+    accessSync(path.join(process.cwd(), "scripts", "hooks", "post_tool_use.js"));
+    accessSync(path.join(process.cwd(), "scripts", "hooks", "pre_tool_use.js"));
+    accessSync(path.join(process.cwd(), "scripts", "hooks", "post_compact.js"));
+
+    const sessionStartModule = require(path.join(
+      process.cwd(),
+      "scripts",
+      "hooks",
+      "session_start.js",
+    )) as Record<string, unknown>;
+    const postToolUseModule = require(path.join(
+      process.cwd(),
+      "scripts",
+      "hooks",
+      "post_tool_use.js",
+    )) as Record<string, unknown>;
+    const preToolUseModule = require(path.join(
+      process.cwd(),
+      "scripts",
+      "hooks",
+      "pre_tool_use.js",
+    )) as Record<string, unknown>;
+    const postCompactModule = require(path.join(
+      process.cwd(),
+      "scripts",
+      "hooks",
+      "post_compact.js",
+    )) as Record<string, unknown>;
+
+    expect(typeof sessionStartModule.handleSessionStart).toBe("function");
+    expect(typeof postToolUseModule.handlePostToolUse).toBe("function");
+    expect(typeof preToolUseModule.handlePreToolUse).toBe("function");
+    expect(typeof postCompactModule.handlePostCompact).toBe("function");
+  });
+
   it("SessionStart injects unloaded global guidance and records it", async () => {
     const workspace = await tempWorkspace();
     await writeGuidance(workspace);

@@ -38,4 +38,6 @@ export async function handlePostToolUse(
   return contextResult("PostToolUse", renderPathGuidance(loaded), loaded);
 }
 
-void runCli;
+if (require.main === module) {
+  void runCli(handlePostToolUse);
+}

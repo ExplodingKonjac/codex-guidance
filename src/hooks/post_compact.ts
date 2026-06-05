@@ -20,4 +20,6 @@ export async function handlePostCompact(
   return NO_OUTPUT;
 }
 
-void runCli;
+if (require.main === module) {
+  void runCli(handlePostCompact);
+}
