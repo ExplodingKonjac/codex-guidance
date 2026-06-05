@@ -138,6 +138,30 @@ describe("hook handlers", () => {
     expect(second).toEqual({ exitCode: 0, stdout: "", stderr: "" });
   });
 
+  it("PostToolUse recognizes MCP-style read tool names", async () => {
+    const workspace = await tempWorkspace();
+    await writeGuidance(workspace);
+
+    const result = await handlePostToolUse(
+      payload(workspace, {
+        hook_event_name: "PostToolUse",
+        tool_name: "mcp__fs__read",
+        tool_input: {
+          path: "src/server/api.ts",
+        },
+      }),
+      { env: env(workspace), cwd: workspace.repo },
+    );
+
+    expect(hookSpecificOutput(result.stdout)).toMatchObject({
+      hookEventName: "PostToolUse",
+    });
+    expect(hookSpecificOutput(result.stdout).additionalContext).toContain(
+      '<guidance id="codex:backend.md">',
+    );
+    expect(result.stderr).toBe("codex:backend.md loaded\n");
+  });
+
   it("PreToolUse injects unloaded edit guidance, records it, and denies once", async () => {
     const workspace = await tempWorkspace();
     await writeGuidance(workspace);
