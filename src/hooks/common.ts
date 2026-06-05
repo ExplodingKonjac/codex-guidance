@@ -154,12 +154,16 @@ export async function discoverForHook(
   context: HookContext = {},
 ): Promise<readonly GuidanceDocument[]> {
   const homeDir = context.env?.HOME;
+  const pluginDataDir = context.env?.PLUGIN_DATA;
   return (
     await discoverGuidance({
       repoRoot: repoRoot(input, context),
       ...(homeDir === undefined || homeDir.trim().length === 0
         ? {}
         : { homeDir }),
+      ...(pluginDataDir === undefined || pluginDataDir.trim().length === 0
+        ? {}
+        : { pluginDataDir }),
     })
   ).documents;
 }

@@ -173,6 +173,20 @@ claude:testing.md
 
 Only Markdown files are loaded. Oversized files, invalid front matter, and files outside configured roots should be skipped safely.
 
+## Discovery Cache
+
+Guidance discovery may cache parsed root results outside the repository:
+
+```text
+${PLUGIN_DATA}/cache/guidance/<root-hash>.json
+```
+
+Each cache file represents one guidance root and stores the cache format version, source, absolute root path, recursive Markdown metadata signature, max file size, parsed guidance documents, and discovery issues.
+
+The recursive metadata signature should include Markdown relative paths, file sizes, and modification times. Non-Markdown files should not invalidate the cache.
+
+Cache reads and writes are fail-open. If a cache entry is missing, corrupted, stale, version-incompatible, or unwritable, discovery should parse the root normally and continue.
+
 ## Matching Model
 
 All file paths should be normalized to repository-relative POSIX-style paths before matching.
@@ -272,7 +286,7 @@ Lock file location:
 ${PLUGIN_DATA}/state/sessions/<session_id>.lock
 ```
 
-Fallback lock files should live next to the fallback state file.
+There is no fallback state location when `PLUGIN_DATA` is unavailable.
 
 Recommended behavior:
 

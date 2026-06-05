@@ -18,6 +18,7 @@ await build({
   platform: "node",
   format: "cjs",
   target: "node20",
+  minify: true,
   sourcemap: false,
   logLevel: "silent",
 });

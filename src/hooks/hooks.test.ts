@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -96,6 +96,9 @@ describe("hook handlers", () => {
       ),
     );
     expect(state.loaded["0"]).toEqual(["user:preferences.md"]);
+    await expect(
+      readdir(path.join(workspace.pluginData, "cache", "guidance")),
+    ).resolves.toHaveLength(4);
   });
 
   it("PostToolUse injects matching read guidance once", async () => {
