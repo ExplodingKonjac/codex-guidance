@@ -12,6 +12,22 @@ It provides Claude Code-style path-scoped rules, but uses the name `guidance` to
 - Resets loaded guidance state after compaction so guidance can be reloaded for the next context generation.
 - Stores session state and guidance cache in a SQLite database under `PLUGIN_DATA` for faster repeated hook runs and safer concurrent access.
 
+## Installation
+
+It is recommended to install through Codex plugin marketplace.
+
+Add this repo as a marketplace:
+
+```bash
+codex plugin marketplace add ExplodingKonjac/codex-guidance
+```
+
+Then install the plugin:
+
+```bash
+codex plugin add codex-guidance@codex-guidance
+```
+
 ## Guidance Locations
 
 The plugin discovers Markdown guidance from:
@@ -51,16 +67,6 @@ Prefer strict types and focused Vitest coverage.
 
 Only the `paths` front matter field is supported. Front matter is stripped before guidance is injected.
 
-## Runtime Data
-
-Runtime storage is kept outside the repository in one SQLite database:
-
-```text
-${PLUGIN_DATA}/db/codex-guidance.sqlite
-```
-
-The plugin does not write runtime state into `.codex/`, `.agents/`, or `.claude/` inside the repository.
-
 ## Development
 
 Node.js 22.17 or newer is required because the plugin uses the built-in `node:sqlite` module.
@@ -82,9 +88,4 @@ Run checks:
 ```bash
 npm run typecheck
 npm test -- --run
-python3 /home/explodingkonjac/.codex/skills/.system/plugin-creator/scripts/validate_plugin.py .
 ```
-
-## Published Contents
-
-The package includes only the plugin manifest, hook configuration, compiled hook scripts, README, license, and design documentation. TypeScript source and tests are development-only.
