@@ -2,16 +2,19 @@ import { accessSync } from "node:fs";
 import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { spawnSync } from "node:child_process";
 import { DatabaseSync } from "node:sqlite";
 
-import { describe, expect, it } from "../test_support";
+import { describe, expect, it } from "./test_support";
 
-import { getDatabasePath } from "../core/sqlite";
-import { loadSessionState } from "../core/state";
-import { handlePostCompact } from "./post_compact";
-import { handlePostToolUse } from "./post_tool_use";
-import { handlePreToolUse } from "./pre_tool_use";
-import { handleSessionStart } from "./session_start";
+import { getDatabasePath } from "./core/sqlite";
+import { loadSessionState } from "./core/state";
+import {
+  handlePostCompact,
+  handlePostToolUse,
+  handlePreToolUse,
+  handleSessionStart,
+} from "./hook_entry";
 
 interface Workspace {
   readonly home: string;
@@ -74,40 +77,46 @@ async function writeGuidance(workspace: Workspace): Promise<void> {
 
 describe("hook handlers", () => {
   it("keeps the committed script entrypoints wired to the compiled runtime tree", () => {
-    accessSync(path.join(process.cwd(), "scripts", "hooks", "session_start.js"));
-    accessSync(path.join(process.cwd(), "scripts", "hooks", "post_tool_use.js"));
-    accessSync(path.join(process.cwd(), "scripts", "hooks", "pre_tool_use.js"));
-    accessSync(path.join(process.cwd(), "scripts", "hooks", "post_compact.js"));
+    accessSync(path.join(process.cwd(), "scripts", "hook_entry.js"));
 
-    const sessionStartModule = require(path.join(
+    const hookEntryModule = require(path.join(
       process.cwd(),
       "scripts",
-      "hooks",
-      "session_start.js",
-    )) as Record<string, unknown>;
-    const postToolUseModule = require(path.join(
-      process.cwd(),
-      "scripts",
-      "hooks",
-      "post_tool_use.js",
-    )) as Record<string, unknown>;
-    const preToolUseModule = require(path.join(
-      process.cwd(),
-      "scripts",
-      "hooks",
-      "pre_tool_use.js",
-    )) as Record<string, unknown>;
-    const postCompactModule = require(path.join(
-      process.cwd(),
-      "scripts",
-      "hooks",
-      "post_compact.js",
+      "hook_entry.js",
     )) as Record<string, unknown>;
 
-    expect(typeof sessionStartModule.handleSessionStart).toBe("function");
-    expect(typeof postToolUseModule.handlePostToolUse).toBe("function");
-    expect(typeof preToolUseModule.handlePreToolUse).toBe("function");
-    expect(typeof postCompactModule.handlePostCompact).toBe("function");
+    expect(typeof hookEntryModule.handleSessionStart).toBe("function");
+    expect(typeof hookEntryModule.handlePostToolUse).toBe("function");
+    expect(typeof hookEntryModule.handlePreToolUse).toBe("function");
+    expect(typeof hookEntryModule.handlePostCompact).toBe("function");
+  });
+
+  it("dispatches through the unified CLI by --hook option", async () => {
+    const workspace = await tempWorkspace();
+    await writeGuidance(workspace);
+
+    const result = spawnSync(
+      process.execPath,
+      [
+        path.join(process.cwd(), "scripts", "hook_entry.js"),
+        "--hook",
+        "session_start",
+      ],
+      {
+        cwd: workspace.repo,
+        env: {
+          ...process.env,
+          ...env(workspace),
+        },
+        input: payload(workspace, {
+          hook_event_name: "SessionStart",
+        }),
+        encoding: "utf8",
+      },
+    );
+
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain('"hookEventName":"SessionStart"');
   });
 
   it("SessionStart injects unloaded global guidance and records it", async () => {

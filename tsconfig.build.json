@@ -9,7 +9,7 @@
   },
   "include": [
     "src/core/**/*.ts",
-    "src/hooks/**/*.ts"
+    "src/hook_entry.ts"
   ],
   "exclude": [
     "test/**/*.ts",

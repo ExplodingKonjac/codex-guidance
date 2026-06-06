@@ -88,7 +88,7 @@ core/path_extract
 
 ## Project Structure
 
-Committed runtime hook scripts should live in `scripts/`, with `scripts/hooks/*` serving as the direct hook entrypoints.
+Committed runtime hook scripts should live in `scripts/`, with `scripts/hook_entry.js` serving as the single direct hook entrypoint.
 
 ```text
 codex-guidance/
@@ -98,12 +98,7 @@ codex-guidance/
 │   └── hooks.json
 ├── scripts/
 │   ├── core/
-│   └── hooks/
-│       ├── common.js
-│       ├── session_start.js
-│       ├── post_tool_use.js
-│       ├── pre_tool_use.js
-│       └── post_compact.js
+│   └── hook_entry.js
 ├── src/
 │   ├── core/
 │   │   ├── discover.ts
@@ -112,19 +107,15 @@ codex-guidance/
 │   │   ├── render.ts
 │   │   ├── state.ts
 │   │   └── path_extract.ts
-│   └── hooks/
-│       ├── session_start.ts
-│       ├── post_tool_use.ts
-│       ├── pre_tool_use.ts
-│       └── post_compact.ts
+│   └── hook_entry.ts
 └── test/
 ```
 
-`src/hooks/*` contains TypeScript source.
+`src/core/*` and `src/hook_entry.ts` contain TypeScript source.
 
-`scripts/hooks/*` contains committed JavaScript runtime entrypoints referenced by Codex.
+`scripts/hook_entry.js` contains the committed JavaScript runtime entrypoint referenced by Codex.
 
-`scripts/core/*` and `scripts/hooks/common.js` contain committed compiled runtime support code produced from `src/`.
+`scripts/core/*` contains committed compiled runtime support code produced from `src/`.
 
 ## Hook Configuration
 
@@ -134,16 +125,16 @@ Conceptually:
 
 ```text
 SessionStart:
-  ${PLUGIN_ROOT}/scripts/hooks/session_start.js
+  ${PLUGIN_ROOT}/scripts/hook_entry.js --hook session_start
 
 PostToolUse:
-  ${PLUGIN_ROOT}/scripts/hooks/post_tool_use.js
+  ${PLUGIN_ROOT}/scripts/hook_entry.js --hook post_tool_use
 
 PreToolUse:
-  ${PLUGIN_ROOT}/scripts/hooks/pre_tool_use.js
+  ${PLUGIN_ROOT}/scripts/hook_entry.js --hook pre_tool_use
 
 PostCompact:
-  ${PLUGIN_ROOT}/scripts/hooks/post_compact.js
+  ${PLUGIN_ROOT}/scripts/hook_entry.js --hook post_compact
 ```
 
 This avoids runtime TypeScript execution inside Codex hooks and keeps plugin execution predictable.
@@ -334,12 +325,8 @@ The plugin should build TypeScript source into committed or packaged JavaScript 
 Recommended build behavior:
 
 ```text
-src/core/*.ts                -> scripts/core/*.js
-src/hooks/common.ts          -> scripts/hooks/common.js
-src/hooks/session_start.ts   -> scripts/hooks/session_start.js
-src/hooks/post_tool_use.ts   -> scripts/hooks/post_tool_use.js
-src/hooks/pre_tool_use.ts    -> scripts/hooks/pre_tool_use.js
-src/hooks/post_compact.ts    -> scripts/hooks/post_compact.js
+src/core/*.ts           -> scripts/core/*.js
+src/hook_entry.ts -> scripts/hook_entry.js
 ```
 
 The published plugin should not require Codex to run `tsx`, `ts-node`, or any TypeScript runtime loader.
@@ -394,7 +381,7 @@ State:
 
 Scripts:
   compiled TypeScript output lives in scripts/
-  hooks.json references ${PLUGIN_ROOT}/scripts/hooks/...
+  hooks.json references ${PLUGIN_ROOT}/scripts/...
 
 MCP:
   omitted from MVP

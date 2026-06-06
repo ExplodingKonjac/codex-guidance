@@ -1,9 +1,13 @@
 import { readFileSync } from "node:fs";
 
-import { discoverGuidance } from "../core/discover";
-import { findMatchingGuidance } from "../core/match";
-import { extractToolPaths } from "../core/path_extract";
-import { renderLoadedStatus } from "../core/render";
+import { discoverGuidance } from "./core/discover";
+import { findMatchingGuidance } from "./core/match";
+import { extractToolPaths } from "./core/path_extract";
+import {
+  renderGlobalGuidance,
+  renderLoadedStatus,
+  renderPathGuidance,
+} from "./core/render";
 import {
   compactSessionState,
   loadSessionState,
@@ -11,8 +15,8 @@ import {
   selectUnloadedGuidance,
   type StateOptions,
   type StateUpdateOptions,
-} from "../core/state";
-import type { GuidanceDocument } from "../core/types";
+} from "./core/state";
+import type { GuidanceDocument } from "./core/types";
 
 export interface HookContext {
   readonly env?: NodeJS.ProcessEnv;
@@ -42,6 +46,9 @@ export const NO_OUTPUT: HookResult = {
   stdout: "",
   stderr: "",
 };
+
+const RETRY_REASON =
+  "Codex Guidance loaded matching guidance. Retry the edit after applying the loaded guidance.";
 
 export function parseHookInput(rawInput: string): HookInput | null {
   let parsed: unknown;
@@ -283,6 +290,128 @@ export function extractPathsForHook(input: HookInput): readonly string[] {
   });
 }
 
+export async function handleSessionStart(
+  rawInput: string,
+  context: HookContext = {},
+): Promise<HookResult> {
+  const input = parseHookInput(rawInput);
+  if (input === null) {
+    return NO_OUTPUT;
+  }
+
+  const globalGuidance = (await discoverForHook(input, context)).filter(
+    (document) => document.paths === null,
+  );
+  const loaded = await markLoadedIfPossible(input, context, globalGuidance);
+  return contextResult("SessionStart", renderGlobalGuidance(loaded), loaded);
+}
+
+export async function handlePostToolUse(
+  rawInput: string,
+  context: HookContext = {},
+): Promise<HookResult> {
+  const input = parseHookInput(rawInput);
+  if (input === null || !isReadTool(input.toolName)) {
+    return NO_OUTPUT;
+  }
+
+  const paths = extractPathsForHook(input);
+  if (paths.length === 0) {
+    return NO_OUTPUT;
+  }
+
+  const matchingGuidance = matchingGuidanceForPaths(
+    await discoverForHook(input, context),
+    paths,
+    input,
+    context,
+  );
+  const loaded = await markLoadedIfPossible(input, context, matchingGuidance);
+  return contextResult("PostToolUse", renderPathGuidance(loaded), loaded);
+}
+
+export async function handlePreToolUse(
+  rawInput: string,
+  context: HookContext = {},
+): Promise<HookResult> {
+  const input = parseHookInput(rawInput);
+  if (input === null || !isEditTool(input.toolName)) {
+    return NO_OUTPUT;
+  }
+
+  const paths = extractPathsForHook(input);
+  if (paths.length === 0) {
+    return NO_OUTPUT;
+  }
+
+  const matchingGuidance = matchingGuidanceForPaths(
+    await discoverForHook(input, context),
+    paths,
+    input,
+    context,
+  );
+  const loaded = await markLoadedIfPossible(input, context, matchingGuidance);
+  return contextResult(
+    "PreToolUse",
+    renderPathGuidance(loaded),
+    loaded,
+    loaded.length === 0
+      ? {}
+      : {
+          permissionDecision: "deny",
+          permissionDecisionReason: RETRY_REASON,
+        },
+  );
+}
+
+export async function handlePostCompact(
+  rawInput: string,
+  context: HookContext = {},
+): Promise<HookResult> {
+  const input = parseHookInput(rawInput);
+  if (input === null) {
+    return NO_OUTPUT;
+  }
+
+  await compactIfPossible(input, context);
+  return NO_OUTPUT;
+}
+
+const HOOK_HANDLERS: Readonly<Record<string, HookHandler>> = {
+  session_start: handleSessionStart,
+  post_tool_use: handlePostToolUse,
+  pre_tool_use: handlePreToolUse,
+  post_compact: handlePostCompact,
+};
+
+function selectedHookHandler(argv: readonly string[]): HookHandler {
+  const hookName = readHookName(argv);
+  const handler = HOOK_HANDLERS[hookName];
+  if (handler !== undefined) {
+    return handler;
+  }
+
+  throw new Error(
+    `Unknown or missing --hook value. Expected one of: ${Object.keys(HOOK_HANDLERS).join(", ")}`,
+  );
+}
+
+function readHookName(argv: readonly string[]): string {
+  for (let index = 0; index < argv.length; index += 1) {
+    const arg = argv[index];
+    if (arg === undefined) {
+      continue;
+    }
+    if (arg === "--hook") {
+      return argv[index + 1] ?? "";
+    }
+    if (arg.startsWith("--hook=")) {
+      return arg.slice("--hook=".length);
+    }
+  }
+  return "";
+}
+
 function readString(value: unknown): string | undefined {
   return typeof value === "string" && value.trim().length > 0
     ? value
@@ -295,4 +424,8 @@ function readPositiveInteger(value: unknown): number | undefined {
   }
   const parsed = Number.parseInt(value, 10);
   return Number.isInteger(parsed) && parsed > 0 ? parsed : undefined;
+}
+
+if (require.main === module) {
+  void runCli(selectedHookHandler(process.argv.slice(2)));
 }

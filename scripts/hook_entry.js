@@ -15,17 +15,22 @@ exports.markLoadedIfPossible = markLoadedIfPossible;
 exports.compactIfPossible = compactIfPossible;
 exports.matchingGuidanceForPaths = matchingGuidanceForPaths;
 exports.extractPathsForHook = extractPathsForHook;
+exports.handleSessionStart = handleSessionStart;
+exports.handlePostToolUse = handlePostToolUse;
+exports.handlePreToolUse = handlePreToolUse;
+exports.handlePostCompact = handlePostCompact;
 const node_fs_1 = require("node:fs");
-const discover_1 = require("../core/discover");
-const match_1 = require("../core/match");
-const path_extract_1 = require("../core/path_extract");
-const render_1 = require("../core/render");
-const state_1 = require("../core/state");
+const discover_1 = require("./core/discover");
+const match_1 = require("./core/match");
+const path_extract_1 = require("./core/path_extract");
+const render_1 = require("./core/render");
+const state_1 = require("./core/state");
 exports.NO_OUTPUT = {
     exitCode: 0,
     stdout: "",
     stderr: "",
 };
+const RETRY_REASON = "Codex Guidance loaded matching guidance. Retry the edit after applying the loaded guidance.";
 function parseHookInput(rawInput) {
     let parsed;
     try {
@@ -202,6 +207,83 @@ function extractPathsForHook(input) {
         toolInput: input.toolInput,
     });
 }
+async function handleSessionStart(rawInput, context = {}) {
+    const input = parseHookInput(rawInput);
+    if (input === null) {
+        return exports.NO_OUTPUT;
+    }
+    const globalGuidance = (await discoverForHook(input, context)).filter((document) => document.paths === null);
+    const loaded = await markLoadedIfPossible(input, context, globalGuidance);
+    return contextResult("SessionStart", (0, render_1.renderGlobalGuidance)(loaded), loaded);
+}
+async function handlePostToolUse(rawInput, context = {}) {
+    const input = parseHookInput(rawInput);
+    if (input === null || !isReadTool(input.toolName)) {
+        return exports.NO_OUTPUT;
+    }
+    const paths = extractPathsForHook(input);
+    if (paths.length === 0) {
+        return exports.NO_OUTPUT;
+    }
+    const matchingGuidance = matchingGuidanceForPaths(await discoverForHook(input, context), paths, input, context);
+    const loaded = await markLoadedIfPossible(input, context, matchingGuidance);
+    return contextResult("PostToolUse", (0, render_1.renderPathGuidance)(loaded), loaded);
+}
+async function handlePreToolUse(rawInput, context = {}) {
+    const input = parseHookInput(rawInput);
+    if (input === null || !isEditTool(input.toolName)) {
+        return exports.NO_OUTPUT;
+    }
+    const paths = extractPathsForHook(input);
+    if (paths.length === 0) {
+        return exports.NO_OUTPUT;
+    }
+    const matchingGuidance = matchingGuidanceForPaths(await discoverForHook(input, context), paths, input, context);
+    const loaded = await markLoadedIfPossible(input, context, matchingGuidance);
+    return contextResult("PreToolUse", (0, render_1.renderPathGuidance)(loaded), loaded, loaded.length === 0
+        ? {}
+        : {
+            permissionDecision: "deny",
+            permissionDecisionReason: RETRY_REASON,
+        });
+}
+async function handlePostCompact(rawInput, context = {}) {
+    const input = parseHookInput(rawInput);
+    if (input === null) {
+        return exports.NO_OUTPUT;
+    }
+    await compactIfPossible(input, context);
+    return exports.NO_OUTPUT;
+}
+const HOOK_HANDLERS = {
+    "session_start": handleSessionStart,
+    "post_tool_use": handlePostToolUse,
+    "pre_tool_use": handlePreToolUse,
+    "post_compact": handlePostCompact,
+};
+function selectedHookHandler(argv) {
+    const hookName = readHookName(argv);
+    const handler = HOOK_HANDLERS[hookName];
+    if (handler !== undefined) {
+        return handler;
+    }
+    throw new Error(`Unknown or missing --hook value. Expected one of: ${Object.keys(HOOK_HANDLERS).join(", ")}`);
+}
+function readHookName(argv) {
+    for (let index = 0; index < argv.length; index += 1) {
+        const arg = argv[index];
+        if (arg === undefined) {
+            continue;
+        }
+        if (arg === "--hook") {
+            return argv[index + 1] ?? "";
+        }
+        if (arg.startsWith("--hook=")) {
+            return arg.slice("--hook=".length);
+        }
+    }
+    return "";
+}
 function readString(value) {
     return typeof value === "string" && value.trim().length > 0
         ? value
@@ -213,4 +295,7 @@ function readPositiveInteger(value) {
     }
     const parsed = Number.parseInt(value, 10);
     return Number.isInteger(parsed) && parsed > 0 ? parsed : undefined;
+}
+if (require.main === module) {
+    void runCli(selectedHookHandler(process.argv.slice(2)));
 }

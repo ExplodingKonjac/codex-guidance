@@ -19,20 +19,20 @@ Read these first before making changes:
 2. `DESIGN.md` for the intended architecture and lifecycle.
 3. `hooks/hooks.json` for the runtime hook wiring.
 4. `.codex-plugin/plugin.json` for the plugin manifest.
-5. `src/hooks/*.ts` and `src/core/*.ts` for implementation.
+5. `src/hook_entry.ts` and `src/core/*.ts` for implementation.
 
 ## Layout
 
 - `src/core/`
   Core logic for discovery, parsing, matching, rendering, path extraction, SQLite cache, and session state.
-- `src/hooks/`
-  Hook handlers and shared hook utilities.
+- `src/hook_entry.ts`
+  Unified hook entry implementation.
 - `scripts/`
   Committed compiled runtime JS.
-- `scripts/hooks/`
-  Direct hook entrypoints referenced by `hooks/hooks.json`.
+- `scripts/hook_entry.js`
+  Unified hook entrypoint referenced by `hooks/hooks.json`.
 - `scripts/core/`
-  Runtime support modules used by the hook entrypoints.
+  Runtime support modules used by the hook entrypoint.
 - `.agents/plugins/marketplace.json`
   Self-reference marketplace entry for local Codex plugin discovery.
 - `plugins/codex-guidance -> ..`
@@ -41,7 +41,7 @@ Read these first before making changes:
 ## Editing Rules
 
 - Edit `src/**` first. Treat `scripts/**` as committed runtime artifacts that must be regenerated and kept in sync with source changes.
-- If you change hook behavior, keep `hooks/hooks.json`, `src/hooks/*`, and `scripts/hooks/*` aligned.
+- If you change hook behavior, keep `hooks/hooks.json`, `src/hook_entry.ts`, and `scripts/hook_entry.js` aligned.
 - If you change plugin metadata or install behavior, review both `.codex-plugin/plugin.json` and `.agents/plugins/marketplace.json`.
 - Do not add MCP-specific architecture unless the task explicitly asks for it. The current design is hook-only.
 - Keep guidance semantics narrow: only `paths` is supported in front matter.
@@ -50,7 +50,7 @@ Read these first before making changes:
 ## Runtime Assumptions
 
 - Node.js `>=22.17` is required because runtime storage uses `node:sqlite`.
-- Hook scripts are invoked through `${PLUGIN_ROOT}/scripts/hooks/*.js`.
+- Hook scripts are invoked through `${PLUGIN_ROOT}/scripts/hook_entry.js --hook <name>`.
 - Hook handlers communicate through JSON on stdin/stdout and must preserve Codex hook payload structure.
 - Read/write behavior depends on extracting file paths from tool payloads, including MCP-style tool names and `apply_patch` headers.
 
@@ -71,7 +71,7 @@ npm run build
 
 Focus tests by area when possible:
 
-- `src/hooks/hooks.test.ts` for hook lifecycle behavior
+- `src/hook_entry.test.ts` for hook lifecycle behavior
 - `src/core/discover.test.ts` for guidance discovery and cache behavior
 - `src/core/parse.test.ts` for front matter parsing rules
 - `src/core/path_extract.test.ts` for tool payload path extraction
@@ -79,10 +79,9 @@ Focus tests by area when possible:
 
 ## Change Guidance
 
-- For guidance loading bugs, inspect `src/hooks/common.ts`, `src/core/discover.ts`, `src/core/match.ts`, and `src/core/render.ts` together.
-- For edit-denial or retry behavior, start with `src/hooks/pre_tool_use.ts`.
-- For read-triggered loading, start with `src/hooks/post_tool_use.ts`.
-- For session generation/reset issues, start with `src/hooks/post_compact.ts` and `src/core/state.ts`.
+- For guidance loading bugs, inspect `src/hook_entry.ts`, `src/core/discover.ts`, `src/core/match.ts`, and `src/core/render.ts` together.
+- For hook behavior changes, start with `src/hook_entry.ts`.
+- For session generation/reset issues, inspect `src/hook_entry.ts` and `src/core/state.ts`.
 - For missing or incorrect matched paths, inspect `src/core/path_extract.ts` before changing hook routing.
 - For cache or concurrency issues, inspect `src/core/sqlite.ts`, `src/core/cache.ts`, and `src/core/state.ts`.
 

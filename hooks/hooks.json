@@ -6,7 +6,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node ${PLUGIN_ROOT}/scripts/hooks/session_start.js"
+            "command": "node ${PLUGIN_ROOT}/scripts/hook_entry.js --hook session_start"
           }
         ],
         "description": "Load global Codex guidance at session start",
@@ -19,7 +19,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node ${PLUGIN_ROOT}/scripts/hooks/post_tool_use.js"
+            "command": "node ${PLUGIN_ROOT}/scripts/hook_entry.js --hook post_tool_use"
           }
         ],
         "description": "Load path-scoped Codex guidance after matching reads",
@@ -32,7 +32,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node ${PLUGIN_ROOT}/scripts/hooks/pre_tool_use.js"
+            "command": "node ${PLUGIN_ROOT}/scripts/hook_entry.js --hook pre_tool_use"
           }
         ],
         "description": "Load path-scoped Codex guidance before matching edits",
@@ -45,7 +45,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node ${PLUGIN_ROOT}/scripts/hooks/post_compact.js"
+            "command": "node ${PLUGIN_ROOT}/scripts/hook_entry.js --hook post_compact"
           }
         ],
         "description": "Advance Codex guidance generation after compaction",
