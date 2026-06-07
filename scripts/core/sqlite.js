@@ -9,7 +9,7 @@ exports.openGuidanceDatabase = openGuidanceDatabase;
 const node_fs_1 = require("node:fs");
 const node_path_1 = __importDefault(require("node:path"));
 const node_sqlite_1 = require("node:sqlite");
-exports.GUIDANCE_DATABASE_SCHEMA_VERSION = 2;
+exports.GUIDANCE_DATABASE_SCHEMA_VERSION = 1;
 exports.DEFAULT_SQLITE_BUSY_TIMEOUT_MS = 250;
 function resolvePluginDataDir(options) {
     if (options.pluginDataDir !== undefined &&
@@ -41,11 +41,6 @@ function openGuidanceDatabase(options) {
         const userVersion = typeof row?.user_version === "number" ? row.user_version : 0;
         if (userVersion === 0) {
             initializeSchema(database);
-            database.exec(`PRAGMA user_version = ${exports.GUIDANCE_DATABASE_SCHEMA_VERSION}`);
-            return database;
-        }
-        if (userVersion === 1) {
-            migrateSchemaFromV1ToV2(database);
             database.exec(`PRAGMA user_version = ${exports.GUIDANCE_DATABASE_SCHEMA_VERSION}`);
             return database;
         }
@@ -82,22 +77,6 @@ function initializeSchema(database) {
       documents_json TEXT NOT NULL,
       issues_json TEXT NOT NULL,
       PRIMARY KEY (source, root)
-    ) STRICT;
-  `);
-    createTranscriptStateTable(database);
-}
-function migrateSchemaFromV1ToV2(database) {
-    createTranscriptStateTable(database);
-}
-function createTranscriptStateTable(database) {
-    database.exec(`
-    CREATE TABLE IF NOT EXISTS session_transcript_state (
-      session_id TEXT PRIMARY KEY,
-      transcript_path TEXT NOT NULL,
-      file_size INTEGER NOT NULL,
-      tail_start INTEGER NOT NULL,
-      tail_hash TEXT NOT NULL,
-      FOREIGN KEY (session_id) REFERENCES session_state(session_id) ON DELETE CASCADE
     ) STRICT;
   `);
 }

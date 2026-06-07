@@ -22,11 +22,11 @@ function doc(id: string, content: string): GuidanceDocument {
 describe("renderGlobalGuidance", () => {
   it("renders global guidance with the exact design header and tags", () => {
     expect(
-      renderGlobalGuidance([doc("user:preferences.md", "# Preferences")], 3),
+      renderGlobalGuidance([doc("user:preferences.md", "# Preferences")]),
     ).toBe(
       `Below are global guidance for this session. You must follow them in later actions:
 
-<guidance id="user:preferences.md" generation="3">
+<guidance id="user:preferences.md">
 # Preferences
 </guidance>`,
     );
@@ -36,11 +36,11 @@ describe("renderGlobalGuidance", () => {
 describe("renderPathGuidance", () => {
   it("renders file-related guidance with the exact design header and tags", () => {
     expect(
-      renderPathGuidance([doc("codex:backend/api.md", "Use schemas.")], 2),
+      renderPathGuidance([doc("codex:backend/api.md", "Use schemas.")]),
     ).toBe(
       `Below are guidance related to the current file. You must follow them in later actions:
 
-<guidance id="codex:backend/api.md" generation="2">
+<guidance id="codex:backend/api.md">
 Use schemas.
 </guidance>`,
     );
@@ -48,9 +48,9 @@ Use schemas.
 
   it("renders documents in deterministic ID order", () => {
     expect(
-      renderPathGuidance([doc("codex:z.md", "Z"), doc("codex:a.md", "A")], 1),
+      renderPathGuidance([doc("codex:z.md", "Z"), doc("codex:a.md", "A")]),
     ).toContain(
-      `<guidance id="codex:a.md" generation="1">\nA\n</guidance>\n\n<guidance id="codex:z.md" generation="1">`,
+      `<guidance id="codex:a.md">\nA\n</guidance>\n\n<guidance id="codex:z.md">`,
     );
   });
 

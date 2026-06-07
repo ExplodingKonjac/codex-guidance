@@ -14,7 +14,6 @@ import {
   handlePostToolUse,
   handlePreToolUse,
   handleSessionStart,
-  handleUserPromptSubmit,
 } from "./hook_entry";
 
 interface Workspace {
@@ -90,7 +89,6 @@ describe("hook handlers", () => {
     expect(typeof hookEntryModule.handlePostToolUse).toBe("function");
     expect(typeof hookEntryModule.handlePreToolUse).toBe("function");
     expect(typeof hookEntryModule.handlePostCompact).toBe("function");
-    expect(typeof hookEntryModule.handleUserPromptSubmit).toBe("function");
   });
 
   it("dispatches through the unified CLI by --hook option", async () => {
@@ -119,29 +117,6 @@ describe("hook handlers", () => {
 
     expect(result.status).toBe(0);
     expect(result.stdout).toContain('"hookEventName":"SessionStart"');
-
-    const promptSubmit = spawnSync(
-      process.execPath,
-      [
-        path.join(process.cwd(), "scripts", "hook_entry.js"),
-        "--hook",
-        "user_prompt_submit",
-      ],
-      {
-        cwd: workspace.repo,
-        env: {
-          ...process.env,
-          ...env(workspace),
-        },
-        input: payload(workspace, {
-          hook_event_name: "UserPromptSubmit",
-        }),
-        encoding: "utf8",
-      },
-    );
-
-    expect(promptSubmit.status).toBe(0);
-    expect(promptSubmit.stdout).toBe("");
   });
 
   it("SessionStart injects unloaded global guidance and records it", async () => {
@@ -163,7 +138,7 @@ describe("hook handlers", () => {
       "Below are global guidance for this session.",
     );
     expect(output.additionalContext).toContain(
-      '<guidance id="user:preferences.md" generation="0">',
+      '<guidance id="user:preferences.md">',
     );
     expect(output.additionalContext).not.toContain("codex:backend.md");
     expect(result.stderr).toBe("user:preferences.md loaded\n");
@@ -209,7 +184,7 @@ describe("hook handlers", () => {
       hookEventName: "PostToolUse",
     });
     expect(hookSpecificOutput(first.stdout).additionalContext).toContain(
-      '<guidance id="codex:backend.md" generation="0">',
+      '<guidance id="codex:backend.md">',
     );
     expect(first.stderr).toBe("codex:backend.md loaded\n");
 
@@ -246,7 +221,7 @@ describe("hook handlers", () => {
       hookEventName: "PostToolUse",
     });
     expect(hookSpecificOutput(result.stdout).additionalContext).toContain(
-      '<guidance id="codex:backend.md" generation="0">',
+      '<guidance id="codex:backend.md">',
     );
     expect(result.stderr).toBe("codex:backend.md loaded\n");
   });
@@ -274,7 +249,7 @@ describe("hook handlers", () => {
       "Retry the edit",
     );
     expect(hookSpecificOutput(first.stdout).additionalContext).toContain(
-      '<guidance id="codex:backend.md" generation="0">',
+      '<guidance id="codex:backend.md">',
     );
 
     const second = await handlePreToolUse(raw, {
@@ -309,56 +284,8 @@ describe("hook handlers", () => {
       cwd: workspace.repo,
     });
     expect(hookSpecificOutput(afterCompact.stdout).additionalContext).toContain(
-      '<guidance id="codex:backend.md" generation="1">',
+      '<guidance id="codex:backend.md">',
     );
-  });
-
-  it("UserPromptSubmit observes transcript divergence and syncs loaded guidance", async () => {
-    const workspace = await tempWorkspace();
-    await writeGuidance(workspace);
-    const transcriptPath = path.join(workspace.pluginData, "transcript.jsonl");
-    await writeEnsured(
-      transcriptPath,
-      '<guidance id="codex:backend.md" generation="0">Use schemas.</guidance>\n',
-    );
-    await handlePostToolUse(
-      payload(workspace, {
-        hook_event_name: "PostToolUse",
-        tool_name: "Read",
-        tool_input: {
-          path: "src/server/api.ts",
-        },
-      }),
-      { env: env(workspace), cwd: workspace.repo },
-    );
-    await handleUserPromptSubmit(
-      payload(workspace, {
-        hook_event_name: "UserPromptSubmit",
-        transcript_path: transcriptPath,
-      }),
-      { env: env(workspace), cwd: workspace.repo },
-    );
-
-    await writeEnsured(transcriptPath, "");
-    const result = await handleUserPromptSubmit(
-      payload(workspace, {
-        hook_event_name: "UserPromptSubmit",
-        transcript_path: transcriptPath,
-      }),
-      { env: env(workspace), cwd: workspace.repo },
-    );
-
-    expect(result).toEqual({ exitCode: 0, stdout: "", stderr: "" });
-    await expect(
-      loadSessionState({
-        sessionId: "session-1",
-        pluginDataDir: workspace.pluginData,
-      }),
-    ).resolves.toMatchObject({
-      loaded: {
-        "0": [],
-      },
-    });
   });
 
   it("fails open for malformed JSON and unknown path shapes", async () => {

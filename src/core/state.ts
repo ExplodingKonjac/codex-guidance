@@ -1,6 +1,3 @@
-import { createHash } from "node:crypto";
-import { closeSync, openSync, readFileSync, readSync, statSync } from "node:fs";
-
 import { openGuidanceDatabase } from "./sqlite";
 import type { GuidanceDocument } from "./types";
 
@@ -23,16 +20,6 @@ export interface MarkGuidanceLoadedOptions extends StateUpdateOptions {
   readonly guidanceIds: readonly string[];
 }
 
-export interface ReplaceLoadedGuidanceOptions extends StateUpdateOptions {
-  readonly generation: number;
-  readonly guidanceIds: readonly string[];
-}
-
-export interface TranscriptOptions extends StateUpdateOptions {
-  readonly transcriptPath: string;
-  readonly tailWindowBytes?: number;
-}
-
 export interface SelectUnloadedGuidanceOptions {
   readonly state: SessionState;
   readonly documents: readonly GuidanceDocument[];
@@ -48,15 +35,7 @@ export type StateUpdateResult =
       readonly reason: "lock-timeout" | "write-error";
     };
 
-export type TranscriptObservation = "normal" | "diverged" | "unavailable";
-
-export interface ParsedGuidanceTag {
-  readonly id: string;
-  readonly generation: number;
-}
-
 const DEFAULT_BUSY_TIMEOUT_MS = 250;
-const DEFAULT_TRANSCRIPT_TAIL_BYTES = 4096;
 
 function defaultState(): SessionState {
   return {
@@ -88,12 +67,6 @@ export async function loadSessionState(
   );
 }
 
-export async function loadCurrentSessionState(
-  options: StateOptions,
-): Promise<SessionState> {
-  return loadSessionState(options);
-}
-
 export function selectUnloadedGuidance(
   options: SelectUnloadedGuidanceOptions,
 ): readonly GuidanceDocument[] {
@@ -104,7 +77,7 @@ export function selectUnloadedGuidance(
 export async function markGuidanceLoaded(
   options: MarkGuidanceLoadedOptions,
 ): Promise<StateUpdateResult> {
-  const guidanceIds = uniqueSortedGuidanceIds(options.guidanceIds);
+  const guidanceIds = [...new Set(normalizeGuidanceIds(options.guidanceIds))];
   return withWriteDatabase(options, (database, sessionId) => {
     database.exec("BEGIN IMMEDIATE");
     try {
@@ -122,32 +95,6 @@ export async function markGuidanceLoaded(
       for (const guidanceId of guidanceIds) {
         insert.run(sessionId, generation, guidanceId);
       }
-      database.exec("COMMIT");
-      return {
-        ok: true,
-        state: readSessionState(database, sessionId),
-      };
-    } catch (error) {
-      rollbackQuietly(database);
-      return failureFromError(error);
-    }
-  });
-}
-
-export async function replaceLoadedGuidanceForGeneration(
-  options: ReplaceLoadedGuidanceOptions,
-): Promise<StateUpdateResult> {
-  const guidanceIds = uniqueSortedGuidanceIds(options.guidanceIds);
-  return withWriteDatabase(options, (database, sessionId) => {
-    database.exec("BEGIN IMMEDIATE");
-    try {
-      ensureSession(database, sessionId);
-      replaceLoadedGuidanceRows(
-        database,
-        sessionId,
-        options.generation,
-        guidanceIds,
-      );
       database.exec("COMMIT");
       return {
         ok: true,
@@ -188,179 +135,14 @@ export async function compactSessionState(
   });
 }
 
-export async function observeTranscriptAppend(
-  options: TranscriptOptions,
-): Promise<TranscriptObservation> {
-  let transcript;
-  try {
-    transcript = transcriptMetadata(options.transcriptPath, options);
-  } catch {
-    return "unavailable";
-  }
-
-  let database;
-  try {
-    database = openGuidanceDatabase({
-      busyTimeoutMs: options.lockTimeoutMs ?? DEFAULT_BUSY_TIMEOUT_MS,
-      ...(options.pluginDataDir === undefined
-        ? {}
-        : { pluginDataDir: options.pluginDataDir }),
-    });
-  } catch {
-    return "unavailable";
-  }
-
-  try {
-    const sessionId = sanitizeSessionId(options.sessionId);
-    database.exec("BEGIN IMMEDIATE");
-    try {
-      ensureSession(database, sessionId);
-      const previous = database
-        .prepare(
-          `
-            SELECT transcript_path, file_size, tail_start, tail_hash
-            FROM session_transcript_state
-            WHERE session_id = ?
-          `,
-        )
-        .get(sessionId) as
-        | {
-            transcript_path?: unknown;
-            file_size?: unknown;
-            tail_start?: unknown;
-            tail_hash?: unknown;
-          }
-        | undefined;
-
-      const observation = transcriptDiverged(
-        options.transcriptPath,
-        transcript.fileSize,
-        options.tailWindowBytes ?? DEFAULT_TRANSCRIPT_TAIL_BYTES,
-        previous,
-      )
-        ? "diverged"
-        : "normal";
-
-      upsertTranscriptState(database, sessionId, transcript);
-      database.exec("COMMIT");
-      return observation;
-    } catch {
-      rollbackQuietly(database);
-      return "unavailable";
-    }
-  } finally {
-    database.close();
-  }
-}
-
-export async function syncLoadedGuidanceFromTranscript(
-  options: TranscriptOptions,
-): Promise<StateUpdateResult> {
-  let transcriptText: string;
-  try {
-    transcriptText = readFileSync(options.transcriptPath, "utf8");
-  } catch {
-    return { ok: false, reason: "write-error" };
-  }
-
-  const parsedTags = parseGuidanceTagsFromTranscript(transcriptText);
-  return withWriteDatabase(options, (database, sessionId) => {
-    database.exec("BEGIN IMMEDIATE");
-    try {
-      const existingGeneration = readPersistedGeneration(database, sessionId);
-      const targetGeneration =
-        existingGeneration ?? highestParsedGeneration(parsedTags);
-      ensureSessionAtGeneration(database, sessionId, targetGeneration);
-      replaceLoadedGuidanceRows(
-        database,
-        sessionId,
-        targetGeneration,
-        parsedTags
-          .filter((tag) => tag.generation === targetGeneration)
-          .map((tag) => tag.id),
-      );
-      database.exec("COMMIT");
-      return {
-        ok: true,
-        state: readSessionState(database, sessionId),
-      };
-    } catch (error) {
-      rollbackQuietly(database);
-      return failureFromError(error);
-    }
-  });
-}
-
-export function parseGuidanceTagsFromTranscript(
-  transcriptText: string,
-): readonly ParsedGuidanceTag[] {
-  const tags: ParsedGuidanceTag[] = [];
-  const tagPattern = /<guidance\b[^>]*>/g;
-  let match: RegExpExecArray | null;
-  while ((match = tagPattern.exec(transcriptText)) !== null) {
-    const rawTag = match[0];
-    const id = readAttribute(rawTag, "id");
-    if (id === undefined) {
-      continue;
-    }
-    const generationText = readAttribute(rawTag, "generation");
-    const generation =
-      generationText === undefined ? 0 : Number.parseInt(generationText, 10);
-    tags.push({
-      id,
-      generation:
-        Number.isInteger(generation) && generation >= 0 ? generation : 0,
-    });
-  }
-  return tags;
-}
-
 function currentLoadedIds(state: SessionState): readonly string[] {
   return state.loaded[String(state.generation)] ?? [];
 }
 
-function normalizeGuidanceIds(
-  guidanceIds: readonly string[],
-): readonly string[] {
-  return guidanceIds.map((id) => id.trim()).filter((id) => id.length > 0);
-}
-
-function uniqueSortedGuidanceIds(
-  guidanceIds: readonly string[],
-): readonly string[] {
-  return [...new Set(normalizeGuidanceIds(guidanceIds))].sort((left, right) =>
-    left.localeCompare(right),
-  );
-}
-
-function replaceLoadedGuidanceRows(
-  database: ReturnType<typeof openGuidanceDatabase>,
-  sessionId: string,
-  generation: number,
-  guidanceIds: readonly string[],
-): void {
-  database
-    .prepare(
-      `
-        DELETE FROM session_loaded_guidance
-        WHERE session_id = ? AND generation = ?
-      `,
-    )
-    .run(sessionId, generation);
-
-  const insert = database.prepare(
-    `
-      INSERT OR IGNORE INTO session_loaded_guidance (
-        session_id,
-        generation,
-        guidance_id
-      )
-      VALUES (?, ?, ?)
-    `,
-  );
-  for (const guidanceId of uniqueSortedGuidanceIds(guidanceIds)) {
-    insert.run(sessionId, generation, guidanceId);
-  }
+function normalizeGuidanceIds(guidanceIds: readonly string[]): readonly string[] {
+  return guidanceIds
+    .map((id) => id.trim())
+    .filter((id) => id.length > 0);
 }
 
 function ensureSession(
@@ -388,39 +170,6 @@ function ensureSession(
     .get(sessionId) as { generation?: unknown } | undefined;
 
   return typeof row?.generation === "number" ? row.generation : 0;
-}
-
-function ensureSessionAtGeneration(
-  database: ReturnType<typeof openGuidanceDatabase>,
-  sessionId: string,
-  generation: number,
-): void {
-  database
-    .prepare(
-      `
-        INSERT INTO session_state (session_id, generation)
-        VALUES (?, ?)
-        ON CONFLICT(session_id) DO NOTHING
-      `,
-    )
-    .run(sessionId, generation);
-}
-
-function readPersistedGeneration(
-  database: ReturnType<typeof openGuidanceDatabase>,
-  sessionId: string,
-): number | undefined {
-  const row = database
-    .prepare(
-      `
-        SELECT generation
-        FROM session_state
-        WHERE session_id = ?
-      `,
-    )
-    .get(sessionId) as { generation?: unknown } | undefined;
-
-  return typeof row?.generation === "number" ? row.generation : undefined;
 }
 
 function readSessionState(
@@ -469,137 +218,6 @@ function readSessionState(
   }
 
   return { generation, loaded };
-}
-
-interface TranscriptMetadata {
-  readonly transcriptPath: string;
-  readonly fileSize: number;
-  readonly tailStart: number;
-  readonly tailHash: string;
-}
-
-function transcriptMetadata(
-  transcriptPath: string,
-  options: TranscriptOptions,
-): TranscriptMetadata {
-  const fileSize = statSync(transcriptPath).size;
-  const tailWindowBytes =
-    options.tailWindowBytes ?? DEFAULT_TRANSCRIPT_TAIL_BYTES;
-  const tailStart = Math.max(0, fileSize - tailWindowBytes);
-  return {
-    transcriptPath,
-    fileSize,
-    tailStart,
-    tailHash: hashFileRange(transcriptPath, tailStart, fileSize - tailStart),
-  };
-}
-
-function transcriptDiverged(
-  transcriptPath: string,
-  fileSize: number,
-  tailWindowBytes: number,
-  previous:
-    | {
-        transcript_path?: unknown;
-        file_size?: unknown;
-        tail_start?: unknown;
-        tail_hash?: unknown;
-      }
-    | undefined,
-): boolean {
-  if (previous === undefined) {
-    return false;
-  }
-  if (
-    typeof previous.transcript_path !== "string" ||
-    typeof previous.file_size !== "number" ||
-    typeof previous.tail_start !== "number" ||
-    typeof previous.tail_hash !== "string"
-  ) {
-    return true;
-  }
-  if (previous.transcript_path !== transcriptPath) {
-    return true;
-  }
-  if (fileSize < previous.file_size) {
-    return true;
-  }
-
-  const expectedLength = previous.file_size - previous.tail_start;
-  if (expectedLength < 0 || expectedLength > tailWindowBytes) {
-    return true;
-  }
-
-  try {
-    return (
-      hashFileRange(transcriptPath, previous.tail_start, expectedLength) !==
-      previous.tail_hash
-    );
-  } catch {
-    return true;
-  }
-}
-
-function upsertTranscriptState(
-  database: ReturnType<typeof openGuidanceDatabase>,
-  sessionId: string,
-  transcript: TranscriptMetadata,
-): void {
-  database
-    .prepare(
-      `
-        INSERT INTO session_transcript_state (
-          session_id,
-          transcript_path,
-          file_size,
-          tail_start,
-          tail_hash
-        )
-        VALUES (?, ?, ?, ?, ?)
-        ON CONFLICT(session_id) DO UPDATE SET
-          transcript_path = excluded.transcript_path,
-          file_size = excluded.file_size,
-          tail_start = excluded.tail_start,
-          tail_hash = excluded.tail_hash
-      `,
-    )
-    .run(
-      sessionId,
-      transcript.transcriptPath,
-      transcript.fileSize,
-      transcript.tailStart,
-      transcript.tailHash,
-    );
-}
-
-function hashFileRange(
-  filePath: string,
-  start: number,
-  length: number,
-): string {
-  const buffer = Buffer.alloc(length);
-  const fileDescriptor = openSync(filePath, "r");
-  try {
-    const bytesRead = readSync(fileDescriptor, buffer, 0, length, start);
-    return createHash("sha256")
-      .update(bytesRead === length ? buffer : buffer.subarray(0, bytesRead))
-      .digest("hex");
-  } finally {
-    closeSync(fileDescriptor);
-  }
-}
-
-function readAttribute(tag: string, attributeName: string): string | undefined {
-  const attributePattern = new RegExp(
-    `${attributeName}\\s*=\\s*(?:"([^"]*)"|\\\\\\"([^\\\\"]*)\\\\\\")`,
-  );
-  const match = attributePattern.exec(tag);
-  const value = match?.[1] ?? match?.[2];
-  return value === undefined || value.trim().length === 0 ? undefined : value;
-}
-
-function highestParsedGeneration(tags: readonly ParsedGuidanceTag[]): number {
-  return tags.reduce((highest, tag) => Math.max(highest, tag.generation), 0);
 }
 
 function rollbackQuietly(

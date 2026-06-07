@@ -1,5 +1,4 @@
-import { readdirSync, readFileSync, statSync } from "node:fs";
-import path from "node:path";
+import { readFileSync } from "node:fs";
 
 import { discoverGuidance } from "./core/discover";
 import { findMatchingGuidance } from "./core/match";
@@ -11,11 +10,9 @@ import {
 } from "./core/render";
 import {
   compactSessionState,
-  loadCurrentSessionState,
+  loadSessionState,
   markGuidanceLoaded,
-  observeTranscriptAppend,
   selectUnloadedGuidance,
-  syncLoadedGuidanceFromTranscript,
   type StateOptions,
   type StateUpdateOptions,
 } from "./core/state";
@@ -37,12 +34,6 @@ interface HookInput {
   readonly sessionId?: string;
   readonly toolName?: string;
   readonly toolInput?: unknown;
-  readonly transcriptPath?: string;
-}
-
-interface LoadedGuidance {
-  readonly documents: readonly GuidanceDocument[];
-  readonly generation: number;
 }
 
 export type HookHandler = (
@@ -78,15 +69,12 @@ export function parseHookInput(rawInput: string): HookInput | null {
   const toolName =
     readString(payload.tool_name) ?? readString(payload.toolName);
   const toolInput = payload.tool_input ?? payload.toolInput;
-  const transcriptPath =
-    readString(payload.transcript_path) ?? readString(payload.transcriptPath);
 
   return {
     ...(cwd === undefined ? {} : { cwd }),
     ...(sessionId === undefined ? {} : { sessionId }),
     ...(toolName === undefined ? {} : { toolName }),
     ...(toolInput === undefined ? {} : { toolInput }),
-    ...(transcriptPath === undefined ? {} : { transcriptPath }),
   };
 }
 
@@ -235,24 +223,23 @@ export async function markLoadedIfPossible(
   input: HookInput,
   context: HookContext,
   documents: readonly GuidanceDocument[],
-): Promise<LoadedGuidance> {
+): Promise<readonly GuidanceDocument[]> {
   if (documents.length === 0) {
-    return { documents: [], generation: 0 };
+    return [];
   }
 
   const stateLoadOptions = stateOptions(input, context);
   const stateMarkOptions = stateUpdateOptions(input, context);
   if (stateLoadOptions === null || stateMarkOptions === null) {
-    return { documents: [], generation: 0 };
+    return [];
   }
 
-  const state = await loadCurrentSessionState(stateLoadOptions);
   const unloaded = selectUnloadedGuidance({
-    state,
+    state: await loadSessionState(stateLoadOptions),
     documents,
   });
   if (unloaded.length === 0) {
-    return { documents: [], generation: state.generation };
+    return [];
   }
 
   const result = await markGuidanceLoaded({
@@ -260,9 +247,7 @@ export async function markLoadedIfPossible(
     guidanceIds: unloaded.map((document) => document.id),
   });
 
-  return result.ok
-    ? { documents: unloaded, generation: result.state.generation }
-    : { documents: [], generation: state.generation };
+  return result.ok ? unloaded : [];
 }
 
 export async function compactIfPossible(
@@ -318,11 +303,7 @@ export async function handleSessionStart(
     (document) => document.paths === null,
   );
   const loaded = await markLoadedIfPossible(input, context, globalGuidance);
-  return contextResult(
-    "SessionStart",
-    renderGlobalGuidance(loaded.documents, loaded.generation),
-    loaded.documents,
-  );
+  return contextResult("SessionStart", renderGlobalGuidance(loaded), loaded);
 }
 
 export async function handlePostToolUse(
@@ -346,11 +327,7 @@ export async function handlePostToolUse(
     context,
   );
   const loaded = await markLoadedIfPossible(input, context, matchingGuidance);
-  return contextResult(
-    "PostToolUse",
-    renderPathGuidance(loaded.documents, loaded.generation),
-    loaded.documents,
-  );
+  return contextResult("PostToolUse", renderPathGuidance(loaded), loaded);
 }
 
 export async function handlePreToolUse(
@@ -376,9 +353,9 @@ export async function handlePreToolUse(
   const loaded = await markLoadedIfPossible(input, context, matchingGuidance);
   return contextResult(
     "PreToolUse",
-    renderPathGuidance(loaded.documents, loaded.generation),
-    loaded.documents,
-    loaded.documents.length === 0
+    renderPathGuidance(loaded),
+    loaded,
+    loaded.length === 0
       ? {}
       : {
           permissionDecision: "deny",
@@ -400,37 +377,11 @@ export async function handlePostCompact(
   return NO_OUTPUT;
 }
 
-export async function handleUserPromptSubmit(
-  rawInput: string,
-  context: HookContext = {},
-): Promise<HookResult> {
-  const input = parseHookInput(rawInput);
-  const options = input === null ? null : stateUpdateOptions(input, context);
-  const transcriptPath =
-    input === null ? undefined : resolveTranscriptPath(input, context);
-  if (input === null || options === null || transcriptPath === undefined) {
-    return NO_OUTPUT;
-  }
-
-  const observation = await observeTranscriptAppend({
-    ...options,
-    transcriptPath,
-  });
-  if (observation === "diverged") {
-    await syncLoadedGuidanceFromTranscript({
-      ...options,
-      transcriptPath,
-    });
-  }
-  return NO_OUTPUT;
-}
-
 const HOOK_HANDLERS: Readonly<Record<string, HookHandler>> = {
   session_start: handleSessionStart,
   post_tool_use: handlePostToolUse,
   pre_tool_use: handlePreToolUse,
   post_compact: handlePostCompact,
-  user_prompt_submit: handleUserPromptSubmit,
 };
 
 function selectedHookHandler(argv: readonly string[]): HookHandler {
@@ -473,80 +424,6 @@ function readPositiveInteger(value: unknown): number | undefined {
   }
   const parsed = Number.parseInt(value, 10);
   return Number.isInteger(parsed) && parsed > 0 ? parsed : undefined;
-}
-
-function resolveTranscriptPath(
-  input: HookInput,
-  context: HookContext,
-): string | undefined {
-  if (input.transcriptPath !== undefined) {
-    return input.transcriptPath;
-  }
-  if (input.sessionId === undefined) {
-    return undefined;
-  }
-
-  const candidates = transcriptSearchRoots(context);
-  for (const root of candidates) {
-    const found = findTranscriptInRoot(root, input.sessionId);
-    if (found !== undefined) {
-      return found;
-    }
-  }
-  return undefined;
-}
-
-function transcriptSearchRoots(context: HookContext): readonly string[] {
-  const roots: string[] = [];
-  const codexHome = context.env?.CODEX_HOME;
-  if (codexHome !== undefined && codexHome.trim().length > 0) {
-    roots.push(path.join(codexHome, "sessions"));
-  }
-
-  const home = context.env?.HOME;
-  if (home !== undefined && home.trim().length > 0) {
-    roots.push(path.join(home, ".codex", "sessions"));
-  }
-  return roots;
-}
-
-function findTranscriptInRoot(
-  root: string,
-  sessionId: string,
-): string | undefined {
-  const pending = [root];
-  while (pending.length > 0) {
-    const current = pending.pop();
-    if (current === undefined) {
-      continue;
-    }
-
-    let entries;
-    try {
-      entries = readdirSync(current, { withFileTypes: true });
-    } catch {
-      continue;
-    }
-
-    for (const entry of entries) {
-      const entryPath = path.join(current, entry.name);
-      if (entry.isDirectory()) {
-        pending.push(entryPath);
-        continue;
-      }
-      if (!entry.name.includes(sessionId)) {
-        continue;
-      }
-      try {
-        if (statSync(entryPath).isFile()) {
-          return entryPath;
-        }
-      } catch {
-        // Ignore files that disappear while scanning.
-      }
-    }
-  }
-  return undefined;
 }
 
 if (require.main === module) {

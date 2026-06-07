@@ -10,7 +10,6 @@ It provides Claude Code-style path-scoped rules, but uses the name `guidance` to
 - Loads path-scoped guidance after matching file reads.
 - Loads path-scoped guidance before matching edits, denies the first edit, and asks Codex to retry after seeing the guidance.
 - Resets loaded guidance state after compaction so guidance can be reloaded for the next context generation.
-- Reconciles loaded guidance state on prompt submission when transcript divergence suggests a rewind, fork, or resume.
 - Stores session state and guidance cache in a SQLite database under `PLUGIN_DATA` for faster repeated hook runs and safer concurrent access.
 
 ## Installation

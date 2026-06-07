@@ -8,23 +8,21 @@ const PATH_HEADER = "Below are guidance related to the current file. You must fo
 function sortedDocuments(documents) {
     return [...documents].sort((left, right) => left.id.localeCompare(right.id));
 }
-function renderGuidanceBlock(document, generation) {
-    return `<guidance id="${document.id}" generation="${generation}">\n${document.content}\n</guidance>`;
+function renderGuidanceBlock(document) {
+    return `<guidance id="${document.id}">\n${document.content}\n</guidance>`;
 }
-function renderGuidance(header, documents, generation) {
+function renderGuidance(header, documents) {
     const sorted = sortedDocuments(documents);
     if (sorted.length === 0) {
         return "";
     }
-    return `${header}\n\n${sorted
-        .map((document) => renderGuidanceBlock(document, generation))
-        .join("\n\n")}`;
+    return `${header}\n\n${sorted.map(renderGuidanceBlock).join("\n\n")}`;
 }
-function renderGlobalGuidance(documents, generation = 0) {
-    return renderGuidance(GLOBAL_HEADER, documents, generation);
+function renderGlobalGuidance(documents) {
+    return renderGuidance(GLOBAL_HEADER, documents);
 }
-function renderPathGuidance(documents, generation = 0) {
-    return renderGuidance(PATH_HEADER, documents, generation);
+function renderPathGuidance(documents) {
+    return renderGuidance(PATH_HEADER, documents);
 }
 function renderLoadedStatus(documents) {
     return sortedDocuments(documents)
