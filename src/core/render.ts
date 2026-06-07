@@ -11,31 +11,39 @@ function sortedDocuments(
   return [...documents].sort((left, right) => left.id.localeCompare(right.id));
 }
 
-function renderGuidanceBlock(document: GuidanceDocument): string {
-  return `<guidance id="${document.id}">\n${document.content}\n</guidance>`;
+function renderGuidanceBlock(
+  document: GuidanceDocument,
+  generation: number,
+): string {
+  return `<guidance id="${document.id}" generation="${generation}">\n${document.content}\n</guidance>`;
 }
 
 function renderGuidance(
   header: string,
   documents: readonly GuidanceDocument[],
+  generation: number,
 ): string {
   const sorted = sortedDocuments(documents);
   if (sorted.length === 0) {
     return "";
   }
-  return `${header}\n\n${sorted.map(renderGuidanceBlock).join("\n\n")}`;
+  return `${header}\n\n${sorted
+    .map((document) => renderGuidanceBlock(document, generation))
+    .join("\n\n")}`;
 }
 
 export function renderGlobalGuidance(
   documents: readonly GuidanceDocument[],
+  generation = 0,
 ): string {
-  return renderGuidance(GLOBAL_HEADER, documents);
+  return renderGuidance(GLOBAL_HEADER, documents, generation);
 }
 
 export function renderPathGuidance(
   documents: readonly GuidanceDocument[],
+  generation = 0,
 ): string {
-  return renderGuidance(PATH_HEADER, documents);
+  return renderGuidance(PATH_HEADER, documents, generation);
 }
 
 export function renderLoadedStatus(

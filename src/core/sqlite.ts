@@ -2,7 +2,7 @@ import { mkdirSync } from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
-export const GUIDANCE_DATABASE_SCHEMA_VERSION = 1;
+export const GUIDANCE_DATABASE_SCHEMA_VERSION = 2;
 export const DEFAULT_SQLITE_BUSY_TIMEOUT_MS = 250;
 
 export interface GuidanceDatabaseOptions {
@@ -23,11 +23,17 @@ function resolvePluginDataDir(options: GuidanceDatabaseOptions): string {
     return path.resolve(envPluginData);
   }
 
-  throw new Error("PLUGIN_DATA is required for codex-guidance runtime storage.");
+  throw new Error(
+    "PLUGIN_DATA is required for codex-guidance runtime storage.",
+  );
 }
 
 export function getDatabasePath(options: GuidanceDatabaseOptions): string {
-  return path.join(resolvePluginDataDir(options), "db", "codex-guidance.sqlite");
+  return path.join(
+    resolvePluginDataDir(options),
+    "db",
+    "codex-guidance.sqlite",
+  );
 }
 
 export function openGuidanceDatabase(
@@ -47,15 +53,25 @@ export function openGuidanceDatabase(
       `PRAGMA busy_timeout = ${options.busyTimeoutMs ?? DEFAULT_SQLITE_BUSY_TIMEOUT_MS}`,
     );
 
-    const row = database
-      .prepare("PRAGMA user_version")
-      .get() as { user_version?: unknown } | undefined;
+    const row = database.prepare("PRAGMA user_version").get() as
+      | { user_version?: unknown }
+      | undefined;
     const userVersion =
       typeof row?.user_version === "number" ? row.user_version : 0;
 
     if (userVersion === 0) {
       initializeSchema(database);
-      database.exec(`PRAGMA user_version = ${GUIDANCE_DATABASE_SCHEMA_VERSION}`);
+      database.exec(
+        `PRAGMA user_version = ${GUIDANCE_DATABASE_SCHEMA_VERSION}`,
+      );
+      return database;
+    }
+
+    if (userVersion === 1) {
+      migrateSchemaFromV1ToV2(database);
+      database.exec(
+        `PRAGMA user_version = ${GUIDANCE_DATABASE_SCHEMA_VERSION}`,
+      );
       return database;
     }
 
@@ -95,6 +111,25 @@ function initializeSchema(database: DatabaseSync): void {
       documents_json TEXT NOT NULL,
       issues_json TEXT NOT NULL,
       PRIMARY KEY (source, root)
+    ) STRICT;
+  `);
+
+  createTranscriptStateTable(database);
+}
+
+function migrateSchemaFromV1ToV2(database: DatabaseSync): void {
+  createTranscriptStateTable(database);
+}
+
+function createTranscriptStateTable(database: DatabaseSync): void {
+  database.exec(`
+    CREATE TABLE IF NOT EXISTS session_transcript_state (
+      session_id TEXT PRIMARY KEY,
+      transcript_path TEXT NOT NULL,
+      file_size INTEGER NOT NULL,
+      tail_start INTEGER NOT NULL,
+      tail_hash TEXT NOT NULL,
+      FOREIGN KEY (session_id) REFERENCES session_state(session_id) ON DELETE CASCADE
     ) STRICT;
   `);
 }

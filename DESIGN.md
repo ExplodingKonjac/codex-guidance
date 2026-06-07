@@ -46,6 +46,10 @@ Edit / PreToolUse:
 PostCompact:
   Reset loaded guidance state for the current session generation.
   Reload guidance lazily on the next matching read or edit.
+
+UserPromptSubmit:
+  Check whether the transcript still looks like a normal append.
+  If transcript divergence is detected, sync the loaded guidance set from emitted guidance tags.
 ```
 
 ## Why No MCP in MVP
@@ -135,6 +139,9 @@ PreToolUse:
 
 PostCompact:
   ${PLUGIN_ROOT}/scripts/hook_entry.js --hook post_compact
+
+UserPromptSubmit:
+  ${PLUGIN_ROOT}/scripts/hook_entry.js --hook user_prompt_submit
 ```
 
 This avoids runtime TypeScript execution inside Codex hooks and keeps plugin execution predictable.
@@ -254,11 +261,18 @@ Use two logical tables:
 ```text
 session_state(session_id, generation)
 session_loaded_guidance(session_id, generation, guidance_id)
+session_transcript_state(session_id, transcript_path, file_size, tail_start, tail_hash)
 ```
 
-The only required information is the current generation and the set of guidance IDs already injected for each generation.
+The primary state is the current generation and the set of guidance IDs already injected for each generation. Transcript state is bounded metadata used to detect whether the transcript still looks like a normal append.
 
 A guidance file is considered already loaded only if its ID appears in `loaded[current generation]`.
+
+Guidance tags include the generation that emitted them:
+
+```text
+<guidance id="codex:backend/api.md" generation="1">
+```
 
 ## State Locking
 
@@ -286,6 +300,16 @@ Next matching Read or Edit:
 ```
 
 This keeps compact behavior simple and reliable.
+
+## Transcript Divergence Handling
+
+`UserPromptSubmit` keeps the SQLite loaded set aligned with the visible transcript after rewind, fork, or resume workflows.
+
+On the first observed prompt submission for a session, the plugin stores the transcript path, file size, tail-window offset, and tail hash. Later prompt submissions verify only the stored tail window when the file path is unchanged and the file size has not shrunk.
+
+If the path changes, size shrinks, or the stored tail hash no longer matches, the plugin reads the full transcript, parses this plugin's own `<guidance ...>` tags, and replaces the loaded set for the current persisted generation. Tags without a `generation` attribute are treated as generation `0` for compatibility.
+
+If the transcript cannot be resolved or read, the plugin skips reconciliation and continues using the SQLite generation state.
 
 ## Edit Handling
 
@@ -374,6 +398,9 @@ PreToolUse:
 
 PostCompact:
   increment generation and reload lazily later
+
+UserPromptSubmit:
+  detect transcript divergence and reconcile loaded guidance when needed
 
 State:
   persisted in ${PLUGIN_DATA}/db/codex-guidance.sqlite

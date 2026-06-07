@@ -65,9 +65,9 @@ describe("SQLite storage", () => {
 
     const database = openDatabase(workspace.pluginData);
     try {
-      const version = database
-        .prepare("PRAGMA user_version")
-        .get() as { user_version?: unknown } | undefined;
+      const version = database.prepare("PRAGMA user_version").get() as
+        | { user_version?: unknown }
+        | undefined;
       const tables = database
         .prepare(
           `
@@ -76,6 +76,7 @@ describe("SQLite storage", () => {
             WHERE type = 'table' AND name IN (
               'session_state',
               'session_loaded_guidance',
+              'session_transcript_state',
               'guidance_root_cache'
             )
             ORDER BY name
@@ -83,11 +84,12 @@ describe("SQLite storage", () => {
         )
         .all() as Array<{ name?: unknown }>;
 
-      expect(version?.user_version).toBe(1);
+      expect(version?.user_version).toBe(2);
       expect(tables).toEqual([
         { name: "guidance_root_cache" },
         { name: "session_loaded_guidance" },
         { name: "session_state" },
+        { name: "session_transcript_state" },
       ]);
     } finally {
       database.close();
@@ -101,9 +103,12 @@ describe("SQLite storage", () => {
       "# Preferences\n",
     );
 
-    await mkdir(path.dirname(getDatabasePath({ pluginDataDir: workspace.pluginData })), {
-      recursive: true,
-    });
+    await mkdir(
+      path.dirname(getDatabasePath({ pluginDataDir: workspace.pluginData })),
+      {
+        recursive: true,
+      },
+    );
 
     const database = openDatabase(workspace.pluginData);
     try {
@@ -126,9 +131,9 @@ describe("SQLite storage", () => {
 
     const reopened = openDatabase(workspace.pluginData);
     try {
-      const version = reopened
-        .prepare("PRAGMA user_version")
-        .get() as { user_version?: unknown } | undefined;
+      const version = reopened.prepare("PRAGMA user_version").get() as
+        | { user_version?: unknown }
+        | undefined;
       const table = reopened
         .prepare(
           `
@@ -143,6 +148,96 @@ describe("SQLite storage", () => {
       expect(table).toBeUndefined();
     } finally {
       reopened.close();
+    }
+  });
+
+  it("migrates v1 databases without removing existing state or cache tables", async () => {
+    const workspace = await tempWorkspace();
+    await mkdir(
+      path.dirname(getDatabasePath({ pluginDataDir: workspace.pluginData })),
+      {
+        recursive: true,
+      },
+    );
+
+    const database = openDatabase(workspace.pluginData);
+    try {
+      database.exec(`
+        CREATE TABLE session_state (
+          session_id TEXT PRIMARY KEY,
+          generation INTEGER NOT NULL
+        ) STRICT;
+
+        CREATE TABLE session_loaded_guidance (
+          session_id TEXT NOT NULL,
+          generation INTEGER NOT NULL,
+          guidance_id TEXT NOT NULL,
+          PRIMARY KEY (session_id, generation, guidance_id),
+          FOREIGN KEY (session_id) REFERENCES session_state(session_id) ON DELETE CASCADE
+        ) STRICT;
+
+        CREATE TABLE guidance_root_cache (
+          source TEXT NOT NULL,
+          root TEXT NOT NULL,
+          root_timestamp TEXT NOT NULL,
+          max_bytes INTEGER NOT NULL,
+          documents_json TEXT NOT NULL,
+          issues_json TEXT NOT NULL,
+          PRIMARY KEY (source, root)
+        ) STRICT;
+
+        INSERT INTO session_state (session_id, generation)
+        VALUES ('session-1', 0);
+        INSERT INTO session_loaded_guidance (session_id, generation, guidance_id)
+        VALUES ('session-1', 0, 'codex:a.md');
+        PRAGMA user_version = 1;
+      `);
+    } finally {
+      database.close();
+    }
+
+    const result = await handleSessionStart(
+      payload(workspace, {
+        hook_event_name: "SessionStart",
+      }),
+      {
+        env: env(workspace),
+        cwd: workspace.repo,
+      },
+    );
+
+    expect(result).toEqual({ exitCode: 0, stdout: "", stderr: "" });
+    const migrated = openDatabase(workspace.pluginData);
+    try {
+      const version = migrated.prepare("PRAGMA user_version").get() as
+        | { user_version?: unknown }
+        | undefined;
+      const loaded = migrated
+        .prepare(
+          `
+            SELECT guidance_id
+            FROM session_loaded_guidance
+            WHERE session_id = 'session-1'
+          `,
+        )
+        .all() as Array<{ guidance_id?: unknown }>;
+      const transcriptTable = migrated
+        .prepare(
+          `
+            SELECT name
+            FROM sqlite_master
+            WHERE type = 'table' AND name = 'session_transcript_state'
+          `,
+        )
+        .get() as { name?: unknown } | undefined;
+
+      expect(version?.user_version).toBe(2);
+      expect(loaded).toEqual([{ guidance_id: "codex:a.md" }]);
+      expect(transcriptTable).toEqual({
+        name: "session_transcript_state",
+      });
+    } finally {
+      migrated.close();
     }
   });
 
