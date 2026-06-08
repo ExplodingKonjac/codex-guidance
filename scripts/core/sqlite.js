@@ -9,7 +9,7 @@ exports.openGuidanceDatabase = openGuidanceDatabase;
 const node_fs_1 = require("node:fs");
 const node_path_1 = __importDefault(require("node:path"));
 const node_sqlite_1 = require("node:sqlite");
-exports.GUIDANCE_DATABASE_SCHEMA_VERSION = 1;
+exports.GUIDANCE_DATABASE_SCHEMA_VERSION = 2;
 exports.DEFAULT_SQLITE_BUSY_TIMEOUT_MS = 250;
 function resolvePluginDataDir(options) {
     if (options.pluginDataDir !== undefined &&
@@ -44,6 +44,11 @@ function openGuidanceDatabase(options) {
             database.exec(`PRAGMA user_version = ${exports.GUIDANCE_DATABASE_SCHEMA_VERSION}`);
             return database;
         }
+        if (userVersion === 1) {
+            migrateSchemaV1ToV2(database);
+            database.exec(`PRAGMA user_version = ${exports.GUIDANCE_DATABASE_SCHEMA_VERSION}`);
+            return database;
+        }
         if (userVersion !== exports.GUIDANCE_DATABASE_SCHEMA_VERSION) {
             throw new Error(`Unsupported database schema version: ${String(userVersion)}`);
         }
@@ -56,17 +61,26 @@ function openGuidanceDatabase(options) {
 }
 function initializeSchema(database) {
     database.exec(`
-    CREATE TABLE IF NOT EXISTS session_state (
-      session_id TEXT PRIMARY KEY,
-      generation INTEGER NOT NULL
+    CREATE TABLE IF NOT EXISTS turn_node (
+      turn_id TEXT PRIMARY KEY,
+      parent_turn_id TEXT,
+      generation INTEGER NOT NULL,
+      kind TEXT NOT NULL CHECK (kind IN ('user', 'compact')),
+      status TEXT NOT NULL CHECK (status IN ('active', 'completed')),
+      FOREIGN KEY (parent_turn_id) REFERENCES turn_node(turn_id)
     ) STRICT;
 
-    CREATE TABLE IF NOT EXISTS session_loaded_guidance (
-      session_id TEXT NOT NULL,
-      generation INTEGER NOT NULL,
+    CREATE TABLE IF NOT EXISTS turn_guidance (
+      turn_id TEXT NOT NULL,
       guidance_id TEXT NOT NULL,
-      PRIMARY KEY (session_id, generation, guidance_id),
-      FOREIGN KEY (session_id) REFERENCES session_state(session_id) ON DELETE CASCADE
+      PRIMARY KEY (turn_id, guidance_id),
+      FOREIGN KEY (turn_id) REFERENCES turn_node(turn_id) ON DELETE CASCADE
+    ) STRICT;
+
+    CREATE TABLE IF NOT EXISTS session_cursor (
+      session_id TEXT PRIMARY KEY,
+      current_turn_id TEXT,
+      FOREIGN KEY (current_turn_id) REFERENCES turn_node(turn_id)
     ) STRICT;
 
     CREATE TABLE IF NOT EXISTS guidance_root_cache (
@@ -79,4 +93,11 @@ function initializeSchema(database) {
       PRIMARY KEY (source, root)
     ) STRICT;
   `);
+}
+function migrateSchemaV1ToV2(database) {
+    database.exec(`
+    DROP TABLE IF EXISTS session_loaded_guidance;
+    DROP TABLE IF EXISTS session_state;
+  `);
+    initializeSchema(database);
 }

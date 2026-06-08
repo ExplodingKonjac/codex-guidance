@@ -9,7 +9,8 @@ It provides Claude Code-style path-scoped rules, but uses the name `guidance` to
 - Loads global guidance at session start.
 - Loads path-scoped guidance after matching file reads.
 - Loads path-scoped guidance before matching edits, denies the first edit, and asks Codex to retry after seeing the guidance.
-- Resets loaded guidance state after compaction so guidance can be reloaded for the next context generation.
+- Tracks loaded guidance on Codex turn IDs, so rewind, fork, and compaction inherit only guidance still visible in the current model context.
+- Treats compaction as a generation boundary so pre-compaction guidance can be reloaded when needed.
 - Stores session state and guidance cache in a SQLite database under `PLUGIN_DATA` for faster repeated hook runs and safer concurrent access.
 
 ## Installation

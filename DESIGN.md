@@ -36,6 +36,9 @@ The plugin uses Codex hooks only. MCP is not part of the MVP.
 SessionStart:
   Load global guidance.
 
+UserPromptSubmit:
+  Resolve the current turn's parent from the Codex transcript and record the turn node.
+
 Read / PostToolUse:
   When Codex reads a matching file, load matching path-scoped guidance.
 
@@ -43,9 +46,14 @@ Edit / PreToolUse:
   Before Codex edits a matching file, check whether matching guidance has already been loaded.
   If not, inject the guidance and deny the current edit so Codex retries after seeing the guidance.
 
+PreCompact:
+  Prepare a compact turn node using the active turn as parent.
+
 PostCompact:
-  Reset loaded guidance state for the current session generation.
-  Reload guidance lazily on the next matching read or edit.
+  Complete the compact turn node and make it the active generation boundary.
+
+Stop:
+  Mark the active turn complete.
 ```
 
 ## Why No MCP in MVP
@@ -127,14 +135,23 @@ Conceptually:
 SessionStart:
   ${PLUGIN_ROOT}/scripts/hook_entry.js --hook session_start
 
+UserPromptSubmit:
+  ${PLUGIN_ROOT}/scripts/hook_entry.js --hook user_prompt_submit
+
 PostToolUse:
   ${PLUGIN_ROOT}/scripts/hook_entry.js --hook post_tool_use
 
 PreToolUse:
   ${PLUGIN_ROOT}/scripts/hook_entry.js --hook pre_tool_use
 
+PreCompact:
+  ${PLUGIN_ROOT}/scripts/hook_entry.js --hook pre_compact
+
 PostCompact:
   ${PLUGIN_ROOT}/scripts/hook_entry.js --hook post_compact
+
+Stop:
+  ${PLUGIN_ROOT}/scripts/hook_entry.js --hook stop
 ```
 
 This avoids runtime TypeScript execution inside Codex hooks and keeps plugin execution predictable.
@@ -231,7 +248,7 @@ The plugin should also surface a concise status message:
 codex:backend/api.md loaded
 ```
 
-## Session State
+## Turn State
 
 Session state should be saved outside the repository in the same SQLite database:
 
@@ -249,16 +266,22 @@ The plugin should not write session state into:
 
 Session state is runtime data, not project configuration.
 
-Use two logical tables:
+Guidance load state is keyed by Codex turn nodes, not by a linear session
+generation. A guidance ID is treated as already loaded only when it appears on
+the current turn or a same-generation ancestor of the current turn.
+
+Use three logical tables:
 
 ```text
-session_state(session_id, generation)
-session_loaded_guidance(session_id, generation, guidance_id)
+turn_node(turn_id, parent_turn_id, generation, kind, status)
+turn_guidance(turn_id, guidance_id)
+session_cursor(session_id, current_turn_id)
 ```
 
-The only required information is the current generation and the set of guidance IDs already injected for each generation.
-
-A guidance file is considered already loaded only if its ID appears in `loaded[current generation]`.
+`session_id` is cursor/routing state only. Parentage and inheritance are derived
+from transcript turn IDs. Compact turns increment generation and act as a
+boundary: guidance loaded before compaction is not inherited after that compact
+turn.
 
 ## State Locking
 
@@ -272,14 +295,14 @@ If the database cannot be opened or a write lock cannot be acquired quickly, the
 
 ## Compact Handling
 
-Do not try to preserve or summarize guidance during compact.
-
-Instead:
+Do not try to preserve or summarize guidance during compact. Instead:
 
 ```text
+PreCompact:
+  Create a compact turn node with the active turn as parent.
+
 PostCompact:
-  Increment generation.
-  Initialize an empty loaded set for the new generation.
+  Complete the compact turn node and make it the active cursor.
 
 Next matching Read or Edit:
   Reload matching guidance if needed.
@@ -298,7 +321,8 @@ If Codex tries to edit a file whose matching guidance has not been loaded:
 3. Deny the current edit.
 4. Ask Codex to retry after applying the loaded guidance.
 
-If matching guidance is already loaded in the current generation, the edit proceeds normally.
+If matching guidance is already loaded on the current turn or a same-generation
+ancestor, the edit proceeds normally.
 
 ## Read Handling
 
@@ -365,6 +389,9 @@ The MVP is a small hooks-only Codex plugin.
 SessionStart:
   inject global guidance
 
+UserPromptSubmit:
+  record the current transcript turn and parent
+
 PostToolUse:
   inject path guidance after matching reads
 
@@ -373,9 +400,13 @@ PreToolUse:
   deny first edit if guidance was newly loaded
 
 PostCompact:
-  increment generation and reload lazily later
+  complete the compact generation boundary
+
+Stop:
+  mark the active turn complete
 
 State:
+  keyed by turn nodes and same-generation ancestors
   persisted in ${PLUGIN_DATA}/db/codex-guidance.sqlite
   protected by SQLite transactions and busy timeouts
 

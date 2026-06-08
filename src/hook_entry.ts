@@ -1,4 +1,5 @@
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync, statSync } from "node:fs";
+import path from "node:path";
 
 import { discoverGuidance } from "./core/discover";
 import { findMatchingGuidance } from "./core/match";
@@ -9,13 +10,16 @@ import {
   renderPathGuidance,
 } from "./core/render";
 import {
-  compactSessionState,
-  loadSessionState,
-  markGuidanceLoaded,
-  selectUnloadedGuidance,
+  ensureCompactTurnNode,
+  ensureTurnNode,
+  markGuidanceLoadedOnTurn,
+  markTurnCompleted,
+  resolveCurrentTurnId,
+  selectUnloadedGuidanceForTurn,
   type StateOptions,
   type StateUpdateOptions,
 } from "./core/state";
+import { resolveTurnFromTranscript } from "./core/transcript";
 import type { GuidanceDocument } from "./core/types";
 
 export interface HookContext {
@@ -32,6 +36,8 @@ export interface HookResult {
 interface HookInput {
   readonly cwd?: string;
   readonly sessionId?: string;
+  readonly turnId?: string;
+  readonly transcriptPath?: string;
   readonly toolName?: string;
   readonly toolInput?: unknown;
 }
@@ -66,6 +72,9 @@ export function parseHookInput(rawInput: string): HookInput | null {
   const cwd = readString(payload.cwd);
   const sessionId =
     readString(payload.session_id) ?? readString(payload.sessionId);
+  const turnId = readString(payload.turn_id) ?? readString(payload.turnId);
+  const transcriptPath =
+    readString(payload.transcript_path) ?? readString(payload.transcriptPath);
   const toolName =
     readString(payload.tool_name) ?? readString(payload.toolName);
   const toolInput = payload.tool_input ?? payload.toolInput;
@@ -73,6 +82,8 @@ export function parseHookInput(rawInput: string): HookInput | null {
   return {
     ...(cwd === undefined ? {} : { cwd }),
     ...(sessionId === undefined ? {} : { sessionId }),
+    ...(turnId === undefined ? {} : { turnId }),
+    ...(transcriptPath === undefined ? {} : { transcriptPath }),
     ...(toolName === undefined ? {} : { toolName }),
     ...(toolInput === undefined ? {} : { toolInput }),
   };
@@ -228,29 +239,90 @@ export async function markLoadedIfPossible(
     return [];
   }
 
-  const stateLoadOptions = stateOptions(input, context);
   const stateMarkOptions = stateUpdateOptions(input, context);
-  if (stateLoadOptions === null || stateMarkOptions === null) {
+  if (stateMarkOptions === null) {
     return [];
   }
 
-  const unloaded = selectUnloadedGuidance({
-    state: await loadSessionState(stateLoadOptions),
-    documents,
-  });
+  let turnId: string | null;
+  let unloaded: readonly GuidanceDocument[];
+  try {
+    turnId = await currentTurnId(input, context);
+    if (turnId === null) {
+      return [];
+    }
+    unloaded = await selectUnloadedGuidanceForTurn({
+      ...stateMarkOptions,
+      turnId,
+      documents,
+    });
+  } catch {
+    return [];
+  }
   if (unloaded.length === 0) {
     return [];
   }
 
-  const result = await markGuidanceLoaded({
+  const result = await markGuidanceLoadedOnTurn({
     ...stateMarkOptions,
+    turnId,
     guidanceIds: unloaded.map((document) => document.id),
   });
 
   return result.ok ? unloaded : [];
 }
 
-export async function compactIfPossible(
+export async function ensureUserTurnForPrompt(
+  input: HookInput,
+  context: HookContext,
+): Promise<StateUpdateOptions | null> {
+  const options = stateUpdateOptions(input, context);
+  if (options === null || input.turnId === undefined) {
+    return null;
+  }
+
+  const resolved = resolveTurnFromTranscript({
+    transcriptPath: transcriptPathForInput(input, context),
+    turnId: input.turnId,
+  });
+  const result = await ensureTurnNode({
+    ...options,
+    turnId: resolved.turnId,
+    parentTurnId: resolved.parentTurnId,
+  });
+  if (!result.ok) {
+    throw new Error(`Failed to record user turn: ${result.reason}`);
+  }
+  return options;
+}
+
+export async function ensureCompactForHook(
+  input: HookInput,
+  context: HookContext,
+  complete: boolean,
+): Promise<void> {
+  const options = stateUpdateOptions(input, context);
+  if (options === null || input.turnId === undefined) {
+    return;
+  }
+
+  const parentTurnId = await resolveCurrentTurnId(options);
+  if (parentTurnId === null) {
+    throw new Error("Cannot record compact turn without an active parent turn");
+  }
+  const result = await ensureCompactTurnNode({
+    ...options,
+    turnId: input.turnId,
+    parentTurnId,
+    complete,
+    advanceCursor: complete,
+  });
+  if (!result.ok) {
+    throw new Error(`Failed to record compact turn: ${result.reason}`);
+  }
+}
+
+export async function markStopTurnIfPossible(
   input: HookInput,
   context: HookContext,
 ): Promise<void> {
@@ -258,7 +330,17 @@ export async function compactIfPossible(
   if (options === null) {
     return;
   }
-  await compactSessionState(options);
+  const turnId = await currentTurnId(input, context);
+  if (turnId === null) {
+    return;
+  }
+  const result = await markTurnCompleted({
+    ...options,
+    turnId,
+  });
+  if (!result.ok) {
+    throw new Error(`Failed to complete turn: ${result.reason}`);
+  }
 }
 
 export function matchingGuidanceForPaths(
@@ -304,6 +386,19 @@ export async function handleSessionStart(
   );
   const loaded = await markLoadedIfPossible(input, context, globalGuidance);
   return contextResult("SessionStart", renderGlobalGuidance(loaded), loaded);
+}
+
+export async function handleUserPromptSubmit(
+  rawInput: string,
+  context: HookContext = {},
+): Promise<HookResult> {
+  const input = parseHookInput(rawInput);
+  if (input === null) {
+    return NO_OUTPUT;
+  }
+
+  await ensureUserTurnForPrompt(input, context);
+  return NO_OUTPUT;
 }
 
 export async function handlePostToolUse(
@@ -373,15 +468,44 @@ export async function handlePostCompact(
     return NO_OUTPUT;
   }
 
-  await compactIfPossible(input, context);
+  await ensureCompactForHook(input, context, true);
+  return NO_OUTPUT;
+}
+
+export async function handlePreCompact(
+  rawInput: string,
+  context: HookContext = {},
+): Promise<HookResult> {
+  const input = parseHookInput(rawInput);
+  if (input === null) {
+    return NO_OUTPUT;
+  }
+
+  await ensureCompactForHook(input, context, false);
+  return NO_OUTPUT;
+}
+
+export async function handleStop(
+  rawInput: string,
+  context: HookContext = {},
+): Promise<HookResult> {
+  const input = parseHookInput(rawInput);
+  if (input === null) {
+    return NO_OUTPUT;
+  }
+
+  await markStopTurnIfPossible(input, context);
   return NO_OUTPUT;
 }
 
 const HOOK_HANDLERS: Readonly<Record<string, HookHandler>> = {
   session_start: handleSessionStart,
+  user_prompt_submit: handleUserPromptSubmit,
   post_tool_use: handlePostToolUse,
   pre_tool_use: handlePreToolUse,
+  pre_compact: handlePreCompact,
   post_compact: handlePostCompact,
+  stop: handleStop,
 };
 
 function selectedHookHandler(argv: readonly string[]): HookHandler {
@@ -416,6 +540,73 @@ function readString(value: unknown): string | undefined {
   return typeof value === "string" && value.trim().length > 0
     ? value
     : undefined;
+}
+
+async function currentTurnId(
+  input: HookInput,
+  context: HookContext,
+): Promise<string | null> {
+  if (input.turnId !== undefined) {
+    return input.turnId;
+  }
+  const options = stateOptions(input, context);
+  if (options === null) {
+    return null;
+  }
+  return resolveCurrentTurnId(options);
+}
+
+function transcriptPathForInput(input: HookInput, context: HookContext): string {
+  if (input.transcriptPath !== undefined) {
+    return input.transcriptPath;
+  }
+  if (input.sessionId === undefined) {
+    throw new Error("transcript_path is required when session_id is missing");
+  }
+
+  const homeDir = context.env?.HOME;
+  if (homeDir === undefined || homeDir.trim().length === 0) {
+    throw new Error("transcript_path is required when HOME is unavailable");
+  }
+
+  const sessionRoot = path.join(homeDir, ".codex", "sessions");
+  const matches = findFilesContainingName(sessionRoot, input.sessionId);
+  if (matches.length !== 1) {
+    throw new Error(
+      `Unable to resolve transcript_path for session ${input.sessionId}: found ${matches.length} matches`,
+    );
+  }
+  return matches[0] as string;
+}
+
+function findFilesContainingName(root: string, needle: string): readonly string[] {
+  const matches: string[] = [];
+  const stack = [root];
+  while (stack.length > 0) {
+    const entry = stack.pop();
+    if (entry === undefined) {
+      continue;
+    }
+
+    let stat;
+    try {
+      stat = statSync(entry);
+    } catch {
+      continue;
+    }
+
+    if (stat.isDirectory()) {
+      for (const child of readdirSync(entry)) {
+        stack.push(path.join(entry, child));
+      }
+      continue;
+    }
+
+    if (stat.isFile() && path.basename(entry).includes(needle)) {
+      matches.push(entry);
+    }
+  }
+  return matches;
 }
 
 function readPositiveInteger(value: unknown): number | undefined {
