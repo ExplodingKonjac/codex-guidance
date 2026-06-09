@@ -9,8 +9,8 @@ import {
   handlePostToolUse,
   handleSessionStart,
   handleUserPromptSubmit,
-} from "../hook_entry";
-import { getDatabasePath } from "./sqlite";
+} from "../../src/hook_entry";
+import { getDatabasePath } from "../../src/core/sqlite";
 
 interface Workspace {
   readonly home: string;

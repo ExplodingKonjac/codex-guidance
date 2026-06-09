@@ -7,7 +7,7 @@ import { DatabaseSync } from "node:sqlite";
 
 import { describe, expect, it } from "./test_support";
 
-import { getDatabasePath } from "./core/sqlite";
+import { getDatabasePath } from "../src/core/sqlite";
 import {
   handlePostCompact,
   handlePostToolUse,
@@ -16,7 +16,7 @@ import {
   handleSessionStart,
   handleStop,
   handleUserPromptSubmit,
-} from "./hook_entry";
+} from "../src/hook_entry";
 
 interface Workspace {
   readonly home: string;

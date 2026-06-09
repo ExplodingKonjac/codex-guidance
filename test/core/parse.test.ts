@@ -4,7 +4,7 @@ import path from "node:path";
 
 import { describe, expect, it } from "../test_support";
 
-import { parseGuidanceFile } from "./parse";
+import { parseGuidanceFile } from "../../src/core/parse";
 
 async function tempRoot(): Promise<string> {
   return mkdtemp(path.join(tmpdir(), "codex-guidance-parse-"));

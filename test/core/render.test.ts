@@ -4,8 +4,8 @@ import {
   renderGlobalGuidance,
   renderLoadedStatus,
   renderPathGuidance,
-} from "./render";
-import type { GuidanceDocument } from "./types";
+} from "../../src/core/render";
+import type { GuidanceDocument } from "../../src/core/types";
 
 function doc(id: string, content: string): GuidanceDocument {
   return {

@@ -4,7 +4,7 @@ import path from "node:path";
 
 import { describe, expect, it } from "../test_support";
 
-import { resolveTurnFromTranscript } from "./transcript";
+import { resolveTurnFromTranscript } from "../../src/core/transcript";
 
 async function transcript(lines: readonly unknown[]): Promise<string> {
   const dir = await mkdtemp(path.join(tmpdir(), "codex-guidance-transcript-"));

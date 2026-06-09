@@ -5,8 +5,8 @@ import { DatabaseSync } from "node:sqlite";
 
 import { describe, expect, it } from "../test_support";
 
-import { discoverGuidance, getGuidanceRoots } from "./discover";
-import { getDatabasePath } from "./sqlite";
+import { discoverGuidance, getGuidanceRoots } from "../../src/core/discover";
+import { getDatabasePath } from "../../src/core/sqlite";
 
 async function tempWorkspace(): Promise<{
   readonly home: string;
