@@ -73,10 +73,6 @@ function updateDraft(draft, record) {
     }
     if (isUserMessageRecord(record)) {
         draft.countsAsUserTurn = true;
-        return;
-    }
-    if (isUserResponseMessageRecord(record)) {
-        draft.countsAsUserTurn = true;
     }
 }
 function finalizeSegment(draft, record) {
@@ -118,13 +114,6 @@ function isTaskStartedRecord(record) {
 function isUserMessageRecord(record) {
     const payload = readPayload(record);
     return payload?.type === "user_message";
-}
-function isUserResponseMessageRecord(record) {
-    if (!isObject(record) || record.type !== "response_item") {
-        return false;
-    }
-    const payload = readPayload(record);
-    return payload?.type === "message" && payload.role === "user";
 }
 function isCompactedRecord(record) {
     return isObject(record) && record.type === "compacted";

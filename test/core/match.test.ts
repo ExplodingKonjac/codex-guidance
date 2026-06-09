@@ -6,8 +6,8 @@ import {
   findMatchingGuidance,
   guidanceMatchesPath,
   normalizeTargetPath,
-} from "./match";
-import type { GuidanceDocument } from "./types";
+} from "../../src/core/match";
+import type { GuidanceDocument } from "../../src/core/types";
 
 function doc(id: string, paths: readonly string[] | null): GuidanceDocument {
   return {

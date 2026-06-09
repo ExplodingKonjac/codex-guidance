@@ -5,7 +5,7 @@ import { DatabaseSync } from "node:sqlite";
 
 import { describe, expect, it } from "../test_support";
 
-import { getDatabasePath } from "./sqlite";
+import { getDatabasePath } from "../../src/core/sqlite";
 import {
   ensureCompactTurnNode,
   ensureTurnNode,
@@ -14,8 +14,8 @@ import {
   resolveCurrentTurnId,
   selectLoadedGuidanceForTurn,
   selectUnloadedGuidanceForTurn,
-} from "./state";
-import type { GuidanceDocument } from "./types";
+} from "../../src/core/state";
+import type { GuidanceDocument } from "../../src/core/types";
 
 async function tempDir(prefix: string): Promise<string> {
   return mkdtemp(path.join(tmpdir(), prefix));

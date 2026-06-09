@@ -8,7 +8,7 @@ import {
   DEFAULT_MAX_GUIDANCE_BYTES,
   discoverGuidance,
   getGuidanceRoots,
-} from "./discover";
+} from "../../src/core/discover";
 
 async function tempWorkspace(): Promise<{ home: string; repo: string }> {
   const base = await mkdtemp(path.join(tmpdir(), "codex-guidance-discover-"));

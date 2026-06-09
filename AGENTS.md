@@ -29,6 +29,10 @@ Read these first before making changes:
   Core logic for discovery, parsing, matching, rendering, path extraction, transcript scanning, SQLite cache, and turn state.
 - `src/hook_entry.ts`
   Unified hook entry implementation.
+- `test/`
+  Test suites, test helpers, and fixtures. Keep test-only source out of `src/**`.
+- `test/core/`
+  Core module tests mirroring `src/core/`.
 - `scripts/`
   Committed compiled runtime JS.
 - `scripts/hook_entry.js`
@@ -73,11 +77,11 @@ npm run build
 
 Focus tests by area when possible:
 
-- `src/hook_entry.test.ts` for hook lifecycle behavior
-- `src/core/discover.test.ts` for guidance discovery and cache behavior
-- `src/core/parse.test.ts` for front matter parsing rules
-- `src/core/path_extract.test.ts` for tool payload path extraction
-- `src/core/sqlite.test.ts` and `src/core/state.test.ts` for runtime storage/state behavior
+- `test/hook_entry.test.ts` for hook lifecycle behavior
+- `test/core/discover.test.ts` for guidance discovery and cache behavior
+- `test/core/parse.test.ts` for front matter parsing rules
+- `test/core/path_extract.test.ts` for tool payload path extraction
+- `test/core/sqlite.test.ts` and `test/core/state.test.ts` for runtime storage/state behavior
 
 ## Change Guidance
 

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "../test_support";
 
-import { extractToolPaths } from "./path_extract";
+import { extractToolPaths } from "../../src/core/path_extract";
 
 describe("extractToolPaths", () => {
   it("extracts paths from common Codex read/write/edit tool fields", () => {
