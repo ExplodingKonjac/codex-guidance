@@ -108,12 +108,11 @@ function openDatabase(pluginDataDir: string): DatabaseSync {
 describe("SQLite storage", () => {
   it("initializes the schema on a brand-new PLUGIN_DATA directory", async () => {
     const workspace = await tempWorkspace();
-    await submitTurn(workspace);
 
     await handleSessionStart(
       payload(workspace, {
         hook_event_name: "SessionStart",
-        turn_id: "turn-a",
+        source: "startup",
       }),
       {
         env: env(workspace),
@@ -175,6 +174,7 @@ describe("SQLite storage", () => {
     const result = await handleSessionStart(
       payload(workspace, {
         hook_event_name: "SessionStart",
+        source: "startup",
       }),
       {
         env: env(workspace),
@@ -182,7 +182,8 @@ describe("SQLite storage", () => {
       },
     );
 
-    expect(result).toEqual({ exitCode: 0, stdout: "", stderr: "" });
+    expect(result.stdout).toContain('"hookEventName":"SessionStart"');
+    expect(result.stdout).toContain("user:preferences.md");
 
     const reopened = openDatabase(workspace.pluginData);
     try {
@@ -221,7 +222,7 @@ describe("SQLite storage", () => {
     const sessionStart = await handleSessionStart(
       payload(workspace, {
         hook_event_name: "SessionStart",
-        turn_id: "turn-a",
+        source: "startup",
       }),
       {
         env: env(workspace),
@@ -258,10 +259,7 @@ describe("SQLite storage", () => {
           `,
         )
         .all() as Array<{ guidance_id?: unknown }>;
-      expect(loaded).toEqual([
-        { guidance_id: "codex:backend.md" },
-        { guidance_id: "user:preferences.md" },
-      ]);
+      expect(loaded).toEqual([{ guidance_id: "codex:backend.md" }]);
     } finally {
       database.close();
     }

@@ -34,7 +34,8 @@ The plugin uses Codex hooks only. MCP is not part of the MVP.
 
 ```text
 SessionStart:
-  Load global guidance.
+  Load global guidance for startup, clear, and compact sources.
+  Do nothing for resume.
 
 UserPromptSubmit:
   Resolve the current turn's parent from the Codex transcript and record the turn node.
@@ -266,9 +267,14 @@ The plugin should not write session state into:
 
 Session state is runtime data, not project configuration.
 
-Guidance load state is keyed by Codex turn nodes, not by a linear session
-generation. A guidance ID is treated as already loaded only when it appears on
-the current turn or a same-generation ancestor of the current turn.
+Path-scoped guidance load state is keyed by Codex turn nodes, not by a linear
+session generation. A path-scoped guidance ID is treated as already loaded only
+when it appears on the current turn or a same-generation ancestor of the current
+turn.
+
+Global guidance is not stored in the turn tree. It is bootstrap context emitted
+by `SessionStart` for `startup`, `clear`, and `compact` sources, and skipped for
+`resume`.
 
 Use three logical tables:
 

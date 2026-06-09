@@ -36,6 +36,7 @@ export interface HookResult {
 interface HookInput {
   readonly cwd?: string;
   readonly sessionId?: string;
+  readonly source?: string;
   readonly turnId?: string;
   readonly transcriptPath?: string;
   readonly toolName?: string;
@@ -72,6 +73,8 @@ export function parseHookInput(rawInput: string): HookInput | null {
   const cwd = readString(payload.cwd);
   const sessionId =
     readString(payload.session_id) ?? readString(payload.sessionId);
+  const source =
+    readString(payload.source) ?? readString(payload.session_start_source);
   const turnId = readString(payload.turn_id) ?? readString(payload.turnId);
   const transcriptPath =
     readString(payload.transcript_path) ?? readString(payload.transcriptPath);
@@ -82,6 +85,7 @@ export function parseHookInput(rawInput: string): HookInput | null {
   return {
     ...(cwd === undefined ? {} : { cwd }),
     ...(sessionId === undefined ? {} : { sessionId }),
+    ...(source === undefined ? {} : { source }),
     ...(turnId === undefined ? {} : { turnId }),
     ...(transcriptPath === undefined ? {} : { transcriptPath }),
     ...(toolName === undefined ? {} : { toolName }),
@@ -380,12 +384,18 @@ export async function handleSessionStart(
   if (input === null) {
     return NO_OUTPUT;
   }
+  if (input.source === "resume") {
+    return NO_OUTPUT;
+  }
 
   const globalGuidance = (await discoverForHook(input, context)).filter(
     (document) => document.paths === null,
   );
-  const loaded = await markLoadedIfPossible(input, context, globalGuidance);
-  return contextResult("SessionStart", renderGlobalGuidance(loaded), loaded);
+  return contextResult(
+    "SessionStart",
+    renderGlobalGuidance(globalGuidance),
+    globalGuidance,
+  );
 }
 
 export async function handleUserPromptSubmit(

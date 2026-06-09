@@ -55,6 +55,7 @@ function parseHookInput(rawInput) {
     const payload = parsed;
     const cwd = readString(payload.cwd);
     const sessionId = readString(payload.session_id) ?? readString(payload.sessionId);
+    const source = readString(payload.source) ?? readString(payload.session_start_source);
     const turnId = readString(payload.turn_id) ?? readString(payload.turnId);
     const transcriptPath = readString(payload.transcript_path) ?? readString(payload.transcriptPath);
     const toolName = readString(payload.tool_name) ?? readString(payload.toolName);
@@ -62,6 +63,7 @@ function parseHookInput(rawInput) {
     return {
         ...(cwd === undefined ? {} : { cwd }),
         ...(sessionId === undefined ? {} : { sessionId }),
+        ...(source === undefined ? {} : { source }),
         ...(turnId === undefined ? {} : { turnId }),
         ...(transcriptPath === undefined ? {} : { transcriptPath }),
         ...(toolName === undefined ? {} : { toolName }),
@@ -287,9 +289,11 @@ async function handleSessionStart(rawInput, context = {}) {
     if (input === null) {
         return exports.NO_OUTPUT;
     }
+    if (input.source === "resume") {
+        return exports.NO_OUTPUT;
+    }
     const globalGuidance = (await discoverForHook(input, context)).filter((document) => document.paths === null);
-    const loaded = await markLoadedIfPossible(input, context, globalGuidance);
-    return contextResult("SessionStart", (0, render_1.renderGlobalGuidance)(loaded), loaded);
+    return contextResult("SessionStart", (0, render_1.renderGlobalGuidance)(globalGuidance), globalGuidance);
 }
 async function handleUserPromptSubmit(rawInput, context = {}) {
     const input = parseHookInput(rawInput);

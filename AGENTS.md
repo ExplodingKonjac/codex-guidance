@@ -4,10 +4,12 @@
 
 `codex-guidance` is a hooks-only Codex plugin that injects Markdown guidance into Codex sessions.
 
-- Global guidance loads at `SessionStart`.
+- Global guidance loads at `SessionStart` for `startup`, `clear`, and `compact` sources; `resume` is skipped.
+- `UserPromptSubmit` records the active Codex turn and its transcript-derived parent.
 - Path-scoped guidance loads after matching reads in `PostToolUse`.
 - Before matching edits in `PreToolUse`, the plugin injects guidance, denies the first edit, and expects Codex to retry with the new context.
-- `PostCompact` advances session generation so guidance can be reloaded after compaction.
+- `PreCompact` and `PostCompact` create and complete compact turn nodes so path-scoped guidance can be reloaded after a compaction boundary.
+- `Stop` marks the active turn complete.
 
 This repo is a plugin repo, not a general-purpose app. The important contract is the hook lifecycle and the exact JSON/output shape Codex expects.
 
@@ -24,7 +26,7 @@ Read these first before making changes:
 ## Layout
 
 - `src/core/`
-  Core logic for discovery, parsing, matching, rendering, path extraction, SQLite cache, and session state.
+  Core logic for discovery, parsing, matching, rendering, path extraction, transcript scanning, SQLite cache, and turn state.
 - `src/hook_entry.ts`
   Unified hook entry implementation.
 - `scripts/`
@@ -81,7 +83,7 @@ Focus tests by area when possible:
 
 - For guidance loading bugs, inspect `src/hook_entry.ts`, `src/core/discover.ts`, `src/core/match.ts`, and `src/core/render.ts` together.
 - For hook behavior changes, start with `src/hook_entry.ts`.
-- For session generation/reset issues, inspect `src/hook_entry.ts` and `src/core/state.ts`.
+- For turn tree, guidance inheritance, or compaction boundary issues, inspect `src/hook_entry.ts`, `src/core/state.ts`, and `src/core/transcript.ts`.
 - For missing or incorrect matched paths, inspect `src/core/path_extract.ts` before changing hook routing.
 - For cache or concurrency issues, inspect `src/core/sqlite.ts`, `src/core/cache.ts`, and `src/core/state.ts`.
 

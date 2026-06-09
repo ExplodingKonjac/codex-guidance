@@ -6,7 +6,7 @@ It provides Claude Code-style path-scoped rules, but uses the name `guidance` to
 
 ## What It Does
 
-- Loads global guidance at session start.
+- Loads global guidance at session start, `/clear`, and compaction; skips resume.
 - Loads path-scoped guidance after matching file reads.
 - Loads path-scoped guidance before matching edits, denies the first edit, and asks Codex to retry after seeing the guidance.
 - Tracks loaded guidance on Codex turn IDs, so rewind, fork, and compaction inherit only guidance still visible in the current model context.

@@ -8,7 +8,6 @@ import { DatabaseSync } from "node:sqlite";
 import { describe, expect, it } from "./test_support";
 
 import { getDatabasePath } from "./core/sqlite";
-import { selectLoadedGuidanceForTurn } from "./core/state";
 import {
   handlePostCompact,
   handlePostToolUse,
@@ -176,11 +175,6 @@ describe("hook handlers", () => {
   it("dispatches through the unified CLI by --hook option", async () => {
     const workspace = await tempWorkspace();
     await writeGuidance(workspace);
-    const transcriptPath = await writeTranscript(workspace, "session-1", [
-      started("turn-a"),
-      prompt(),
-    ]);
-    await submitTurn(workspace, "turn-a", transcriptPath);
 
     const result = spawnSync(
       process.execPath,
@@ -197,7 +191,7 @@ describe("hook handlers", () => {
         },
         input: payload(workspace, {
           hook_event_name: "SessionStart",
-          turn_id: "turn-a",
+          source: "startup",
         }),
         encoding: "utf8",
       },
@@ -207,19 +201,14 @@ describe("hook handlers", () => {
     expect(result.stdout).toContain('"hookEventName":"SessionStart"');
   });
 
-  it("SessionStart injects unloaded global guidance and records it", async () => {
+  it("SessionStart injects global guidance for startup without a current turn", async () => {
     const workspace = await tempWorkspace();
     await writeGuidance(workspace);
-    const transcriptPath = await writeTranscript(workspace, "session-1", [
-      started("turn-a"),
-      prompt(),
-    ]);
-    await submitTurn(workspace, "turn-a", transcriptPath);
 
     const result = await handleSessionStart(
       payload(workspace, {
         hook_event_name: "SessionStart",
-        turn_id: "turn-a",
+        source: "startup",
       }),
       { env: env(workspace), cwd: workspace.repo },
     );
@@ -237,14 +226,6 @@ describe("hook handlers", () => {
     expect(output.additionalContext).not.toContain("codex:backend.md");
     expect(result.stderr).toBe("user:preferences.md loaded\n");
 
-    await expect(
-      selectLoadedGuidanceForTurn({
-        sessionId: "session-1",
-        pluginDataDir: workspace.pluginData,
-        turnId: "turn-a",
-      }),
-    ).resolves.toEqual(["user:preferences.md"]);
-
     const database = openDatabase(workspace.pluginData);
     try {
       const cacheRows = database
@@ -254,6 +235,40 @@ describe("hook handlers", () => {
     } finally {
       database.close();
     }
+  });
+
+  it("SessionStart injects global guidance for clear, compact, and missing source", async () => {
+    const workspace = await tempWorkspace();
+    await writeGuidance(workspace);
+
+    for (const source of ["clear", "compact", undefined]) {
+      const result = await handleSessionStart(
+        payload(workspace, {
+          hook_event_name: "SessionStart",
+          ...(source === undefined ? {} : { source }),
+        }),
+        { env: env(workspace), cwd: workspace.repo },
+      );
+
+      expect(hookSpecificOutput(result.stdout).additionalContext).toContain(
+        '<guidance id="user:preferences.md">',
+      );
+    }
+  });
+
+  it("SessionStart does not inject global guidance on resume", async () => {
+    const workspace = await tempWorkspace();
+    await writeGuidance(workspace);
+
+    const result = await handleSessionStart(
+      payload(workspace, {
+        hook_event_name: "SessionStart",
+        source: "resume",
+      }),
+      { env: env(workspace), cwd: workspace.repo },
+    );
+
+    expect(result).toEqual({ exitCode: 0, stdout: "", stderr: "" });
   });
 
   it("PostToolUse injects matching read guidance once", async () => {
