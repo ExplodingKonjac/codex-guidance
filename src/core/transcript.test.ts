@@ -152,7 +152,7 @@ describe("transcript turn resolution", () => {
     expect(resolved.parentTurnId).toBe("compact-1");
   });
 
-  it("counts user response-item shell command segments as user turns", async () => {
+  it("ignores user response-item shell command segments as turn parents", async () => {
     const transcriptPath = await transcript([
       started("turn-a"),
       prompt("first"),
@@ -169,7 +169,38 @@ describe("transcript turn resolution", () => {
       turnId: "turn-c",
     });
 
-    expect(resolved.parentTurnId).toBe("turn-shell");
+    expect(resolved.parentTurnId).toBe("turn-a");
+  });
+
+  it("does not spend rollback debt on user response-item shell command segments", async () => {
+    const transcriptPath = await transcript([
+      started("turn-hello"),
+      prompt("hello?"),
+      complete(),
+      started("turn-a"),
+      prompt("Write a random, small, standalone C++ source code."),
+      complete(),
+      started("turn-b"),
+      prompt("Write another one."),
+      complete(),
+      started("turn-shell"),
+      userShellMessage(),
+      complete(),
+      rollback(2),
+      started("turn-replay"),
+      prompt("Write a random, small, standalone C++ source code."),
+    ]);
+
+    const resolved = resolveTurnFromTranscript({
+      transcriptPath,
+      turnId: "turn-replay",
+    });
+
+    expect(resolved).toEqual({
+      turnId: "turn-replay",
+      parentTurnId: "turn-hello",
+      kind: "user",
+    });
   });
 
   it("returns the compact segment as parent when rollback removes later user turns", async () => {

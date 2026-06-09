@@ -114,11 +114,6 @@ function updateDraft(draft: SegmentDraft, record: unknown): void {
 
   if (isUserMessageRecord(record)) {
     draft.countsAsUserTurn = true;
-    return;
-  }
-
-  if (isUserResponseMessageRecord(record)) {
-    draft.countsAsUserTurn = true;
   }
 }
 
@@ -172,14 +167,6 @@ function isTaskStartedRecord(record: unknown): boolean {
 function isUserMessageRecord(record: unknown): boolean {
   const payload = readPayload(record);
   return payload?.type === "user_message";
-}
-
-function isUserResponseMessageRecord(record: unknown): boolean {
-  if (!isObject(record) || record.type !== "response_item") {
-    return false;
-  }
-  const payload = readPayload(record);
-  return payload?.type === "message" && payload.role === "user";
 }
 
 function isCompactedRecord(record: unknown): boolean {

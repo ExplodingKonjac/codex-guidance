@@ -114,6 +114,27 @@ function compacted(): unknown {
   };
 }
 
+function userShellMessage(): unknown {
+  return {
+    type: "response_item",
+    payload: {
+      type: "message",
+      role: "user",
+      content: [{ type: "input_text", text: "rm *.cpp" }],
+    },
+  };
+}
+
+function rollback(numTurns: number): unknown {
+  return {
+    type: "event_msg",
+    payload: {
+      type: "thread_rolled_back",
+      num_turns: numTurns,
+    },
+  };
+}
+
 async function submitTurn(
   workspace: Workspace,
   turnId: string,
@@ -150,6 +171,13 @@ async function writeGuidance(workspace: Workspace): Promise<void> {
   await writeEnsured(
     path.join(workspace.repo, ".codex", "guidance", "backend.md"),
     '---\npaths:\n  - "src/**/*.ts"\n---\n# Backend\n\nUse schemas.\n',
+  );
+}
+
+async function writeCppGuidance(workspace: Workspace): Promise<void> {
+  await writeEnsured(
+    path.join(workspace.home, ".codex", "guidance", "cpp.md"),
+    '---\npaths:\n  - "*.cpp"\n---\n# C++\n\nUse modern C++.\n',
   );
 }
 
@@ -382,6 +410,93 @@ describe("hook handlers", () => {
       cwd: workspace.repo,
     });
     expect(second).toEqual({ exitCode: 0, stdout: "", stderr: "" });
+  });
+
+  it("reloads edit guidance after rollback skips prompt turns but ignores shell command records", async () => {
+    const workspace = await tempWorkspace();
+    await writeGuidance(workspace);
+    await writeCppGuidance(workspace);
+
+    const helloTranscript = await writeTranscript(workspace, "session-1", [
+      started("turn-hello"),
+      prompt("hello?"),
+    ]);
+    await submitTurn(workspace, "turn-hello", helloTranscript);
+
+    const firstPromptTranscript = await writeTranscript(workspace, "session-1", [
+      started("turn-hello"),
+      prompt("hello?"),
+      complete(),
+      started("turn-a"),
+      prompt("Write a random, small, standalone C++ source code."),
+    ]);
+    await submitTurn(workspace, "turn-a", firstPromptTranscript);
+
+    const firstEdit = await handlePreToolUse(
+      payload(workspace, {
+        hook_event_name: "PreToolUse",
+        turn_id: "turn-a",
+        tool_name: "Edit",
+        tool_input: {
+          file_path: "debug_random.cpp",
+        },
+      }),
+      { env: env(workspace), cwd: workspace.repo },
+    );
+    expect(hookSpecificOutput(firstEdit.stdout).additionalContext).toContain(
+      '<guidance id="user:cpp.md">',
+    );
+
+    const laterPromptTranscript = await writeTranscript(workspace, "session-1", [
+      started("turn-hello"),
+      prompt("hello?"),
+      complete(),
+      started("turn-a"),
+      prompt("Write a random, small, standalone C++ source code."),
+      complete(),
+      started("turn-b"),
+      prompt("Write another one."),
+    ]);
+    await submitTurn(workspace, "turn-b", laterPromptTranscript);
+
+    const replayTranscript = await writeTranscript(workspace, "session-1", [
+      started("turn-hello"),
+      prompt("hello?"),
+      complete(),
+      started("turn-a"),
+      prompt("Write a random, small, standalone C++ source code."),
+      complete(),
+      started("turn-b"),
+      prompt("Write another one."),
+      complete(),
+      started("turn-shell"),
+      userShellMessage(),
+      complete(),
+      rollback(2),
+      started("turn-replay"),
+      prompt("Write a random, small, standalone C++ source code."),
+    ]);
+    await submitTurn(workspace, "turn-replay", replayTranscript);
+
+    const replayEdit = await handlePreToolUse(
+      payload(workspace, {
+        hook_event_name: "PreToolUse",
+        turn_id: "turn-replay",
+        tool_name: "Edit",
+        tool_input: {
+          file_path: "debug_standalone.cpp",
+        },
+      }),
+      { env: env(workspace), cwd: workspace.repo },
+    );
+
+    expect(hookSpecificOutput(replayEdit.stdout)).toMatchObject({
+      hookEventName: "PreToolUse",
+      permissionDecision: "deny",
+    });
+    expect(hookSpecificOutput(replayEdit.stdout).additionalContext).toContain(
+      '<guidance id="user:cpp.md">',
+    );
   });
 
   it("PreCompact prepares a compact node without advancing the cursor", async () => {
