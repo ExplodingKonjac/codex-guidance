@@ -1,6 +1,6 @@
 {
   "name": "codex-guidance",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "Path-scoped Markdown guidance for Codex sessions.",
   "author": {
     "name": "ExplodingKonjac"
@@ -14,11 +14,6 @@
     "developerName": "ExplodingKonjac",
     "category": "Developer Tools",
     "capabilities": ["Read", "Write"],
-    "defaultPrompt": [
-      "Use repository guidance before editing matching files.",
-      "Load my global Codex guidance for this session.",
-      "Apply path-scoped guidance while working in this repo."
-    ],
     "brandColor": "#2563EB"
   }
 }
