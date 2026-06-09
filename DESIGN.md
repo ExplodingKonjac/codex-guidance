@@ -19,9 +19,9 @@ The plugin loads Markdown guidance from:
 
 All directories support subdirectories.
 
-Each Markdown file may contain YAML front matter with only one supported field:
+Each Markdown file may contain a narrow front matter block with only one supported field:
 
-```yaml
+```text
 paths:
   - "src/**/*.ts"
 ```
@@ -34,7 +34,11 @@ The plugin uses Codex hooks only. MCP is not part of the MVP.
 
 ```text
 SessionStart:
-  Load global guidance.
+  Load global guidance for startup, clear, and compact sources.
+  Do nothing for resume.
+
+UserPromptSubmit:
+  Resolve the current turn's parent from the Codex transcript and record the turn node.
 
 Read / PostToolUse:
   When Codex reads a matching file, load matching path-scoped guidance.
@@ -43,9 +47,14 @@ Edit / PreToolUse:
   Before Codex edits a matching file, check whether matching guidance has already been loaded.
   If not, inject the guidance and deny the current edit so Codex retries after seeing the guidance.
 
+PreCompact:
+  Prepare a compact turn node using the active turn as parent.
+
 PostCompact:
-  Reset loaded guidance state for the current session generation.
-  Reload guidance lazily on the next matching read or edit.
+  Complete the compact turn node and make it the active generation boundary.
+
+Stop:
+  Mark the active turn complete.
 ```
 
 ## Why No MCP in MVP
@@ -88,7 +97,7 @@ core/path_extract
 
 ## Project Structure
 
-Compiled hook scripts should live in `scripts/`.
+Committed runtime hook scripts should live in `scripts/`, with `scripts/hook_entry.js` serving as the single direct hook entrypoint.
 
 ```text
 codex-guidance/
@@ -97,12 +106,8 @@ codex-guidance/
 ├── hooks/
 │   └── hooks.json
 ├── scripts/
-│   ├── shared/
-│   │   └── entry.js
-│   ├── session_start.js
-│   ├── post_tool_use.js
-│   ├── pre_tool_use.js
-│   └── post_compact.js
+│   ├── core/
+│   └── hook_entry.js
 ├── src/
 │   ├── core/
 │   │   ├── discover.ts
@@ -111,17 +116,15 @@ codex-guidance/
 │   │   ├── render.ts
 │   │   ├── state.ts
 │   │   └── path_extract.ts
-│   └── hooks/
-│       ├── session_start.ts
-│       ├── post_tool_use.ts
-│       ├── pre_tool_use.ts
-│       └── post_compact.ts
+│   └── hook_entry.ts
 └── test/
 ```
 
-`src/hooks/*` contains TypeScript source.
+`src/core/*` and `src/hook_entry.ts` contain TypeScript source.
 
-`scripts/*` contains compiled JavaScript entrypoints referenced by Codex.
+`scripts/hook_entry.js` contains the committed JavaScript runtime entrypoint referenced by Codex.
+
+`scripts/core/*` contains committed compiled runtime support code produced from `src/`.
 
 ## Hook Configuration
 
@@ -131,16 +134,25 @@ Conceptually:
 
 ```text
 SessionStart:
-  ${PLUGIN_ROOT}/scripts/session_start.js
+  ${PLUGIN_ROOT}/scripts/hook_entry.js --hook session_start
+
+UserPromptSubmit:
+  ${PLUGIN_ROOT}/scripts/hook_entry.js --hook user_prompt_submit
 
 PostToolUse:
-  ${PLUGIN_ROOT}/scripts/post_tool_use.js
+  ${PLUGIN_ROOT}/scripts/hook_entry.js --hook post_tool_use
 
 PreToolUse:
-  ${PLUGIN_ROOT}/scripts/pre_tool_use.js
+  ${PLUGIN_ROOT}/scripts/hook_entry.js --hook pre_tool_use
+
+PreCompact:
+  ${PLUGIN_ROOT}/scripts/hook_entry.js --hook pre_compact
 
 PostCompact:
-  ${PLUGIN_ROOT}/scripts/post_compact.js
+  ${PLUGIN_ROOT}/scripts/hook_entry.js --hook post_compact
+
+Stop:
+  ${PLUGIN_ROOT}/scripts/hook_entry.js --hook stop
 ```
 
 This avoids runtime TypeScript execution inside Codex hooks and keeps plugin execution predictable.
@@ -172,6 +184,8 @@ claude:testing.md
 ```
 
 Only Markdown files are loaded. Oversized files, invalid front matter, and files outside configured roots should be skipped safely.
+
+The front matter parser intentionally supports only a top-level `paths` block list of strings. Broader YAML features such as inline arrays, nested objects, anchors, and additional keys are not supported.
 
 ## Discovery Cache
 
@@ -227,7 +241,7 @@ Below are global guidance for this session. You must follow them in later action
 </guidance>
 ```
 
-YAML front matter should not be included in the injected content.
+Front matter should not be included in the injected content.
 
 The plugin should also surface a concise status message:
 
@@ -235,7 +249,7 @@ The plugin should also surface a concise status message:
 codex:backend/api.md loaded
 ```
 
-## Session State
+## Turn State
 
 Session state should be saved outside the repository in the same SQLite database:
 
@@ -253,16 +267,27 @@ The plugin should not write session state into:
 
 Session state is runtime data, not project configuration.
 
-Use two logical tables:
+Path-scoped guidance load state is keyed by Codex turn nodes, not by a linear
+session generation. A path-scoped guidance ID is treated as already loaded only
+when it appears on the current turn or a same-generation ancestor of the current
+turn.
+
+Global guidance is not stored in the turn tree. It is bootstrap context emitted
+by `SessionStart` for `startup`, `clear`, and `compact` sources, and skipped for
+`resume`.
+
+Use three logical tables:
 
 ```text
-session_state(session_id, generation)
-session_loaded_guidance(session_id, generation, guidance_id)
+turn_node(turn_id, parent_turn_id, generation, kind, status)
+turn_guidance(turn_id, guidance_id)
+session_cursor(session_id, current_turn_id)
 ```
 
-The only required information is the current generation and the set of guidance IDs already injected for each generation.
-
-A guidance file is considered already loaded only if its ID appears in `loaded[current generation]`.
+`session_id` is cursor/routing state only. Parentage and inheritance are derived
+from transcript turn IDs. Compact turns increment generation and act as a
+boundary: guidance loaded before compaction is not inherited after that compact
+turn.
 
 ## State Locking
 
@@ -276,14 +301,14 @@ If the database cannot be opened or a write lock cannot be acquired quickly, the
 
 ## Compact Handling
 
-Do not try to preserve or summarize guidance during compact.
-
-Instead:
+Do not try to preserve or summarize guidance during compact. Instead:
 
 ```text
+PreCompact:
+  Create a compact turn node with the active turn as parent.
+
 PostCompact:
-  Increment generation.
-  Initialize an empty loaded set for the new generation.
+  Complete the compact turn node and make it the active cursor.
 
 Next matching Read or Edit:
   Reload matching guidance if needed.
@@ -302,7 +327,8 @@ If Codex tries to edit a file whose matching guidance has not been loaded:
 3. Deny the current edit.
 4. Ask Codex to retry after applying the loaded guidance.
 
-If matching guidance is already loaded in the current generation, the edit proceeds normally.
+If matching guidance is already loaded on the current turn or a same-generation
+ancestor, the edit proceeds normally.
 
 ## Read Handling
 
@@ -329,11 +355,8 @@ The plugin should build TypeScript source into committed or packaged JavaScript 
 Recommended build behavior:
 
 ```text
-src/hooks/shared_entry.ts    -> scripts/shared/entry.js
-src/hooks/session_start.ts   -> scripts/session_start.js wrapper
-src/hooks/post_tool_use.ts   -> scripts/post_tool_use.js wrapper
-src/hooks/pre_tool_use.ts    -> scripts/pre_tool_use.js wrapper
-src/hooks/post_compact.ts    -> scripts/post_compact.js wrapper
+src/core/*.ts           -> scripts/core/*.js
+src/hook_entry.ts -> scripts/hook_entry.js
 ```
 
 The published plugin should not require Codex to run `tsx`, `ts-node`, or any TypeScript runtime loader.
@@ -372,6 +395,9 @@ The MVP is a small hooks-only Codex plugin.
 SessionStart:
   inject global guidance
 
+UserPromptSubmit:
+  record the current transcript turn and parent
+
 PostToolUse:
   inject path guidance after matching reads
 
@@ -380,9 +406,13 @@ PreToolUse:
   deny first edit if guidance was newly loaded
 
 PostCompact:
-  increment generation and reload lazily later
+  complete the compact generation boundary
+
+Stop:
+  mark the active turn complete
 
 State:
+  keyed by turn nodes and same-generation ancestors
   persisted in ${PLUGIN_DATA}/db/codex-guidance.sqlite
   protected by SQLite transactions and busy timeouts
 

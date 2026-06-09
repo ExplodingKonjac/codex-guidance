@@ -1,6 +1,6 @@
 import path from "node:path";
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "../test_support";
 
 import {
   findMatchingGuidance,
@@ -60,6 +60,15 @@ describe("guidanceMatchesPath", () => {
     expect(guidanceMatchesPath(doc("global", null), "src/server/api.ts")).toBe(
       false,
     );
+  });
+
+  it("continues matching dot-prefixed path segments", () => {
+    expect(
+      guidanceMatchesPath(doc("api", ["src/**/*.ts"]), "src/.hidden/api.ts"),
+    ).toBe(true);
+    expect(
+      guidanceMatchesPath(doc("api", ["src/**/*.ts"]), "src/server/.api.ts"),
+    ).toBe(true);
   });
 });
 

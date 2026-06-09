@@ -3,10 +3,13 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "../test_support";
 
-import { handlePostToolUse } from "../hooks/post_tool_use";
-import { handleSessionStart } from "../hooks/session_start";
+import {
+  handlePostToolUse,
+  handleSessionStart,
+  handleUserPromptSubmit,
+} from "../hook_entry";
 import { getDatabasePath } from "./sqlite";
 
 interface Workspace {
@@ -45,6 +48,58 @@ function payload(workspace: Workspace, extra: Record<string, unknown>): string {
   });
 }
 
+function started(turnId: string): unknown {
+  return {
+    type: "event_msg",
+    payload: {
+      type: "task_started",
+      turn_id: turnId,
+    },
+  };
+}
+
+function prompt(): unknown {
+  return {
+    type: "event_msg",
+    payload: {
+      type: "user_message",
+      message: "hello",
+    },
+  };
+}
+
+async function writeTranscript(workspace: Workspace): Promise<string> {
+  const transcriptPath = path.join(
+    workspace.home,
+    ".codex",
+    "sessions",
+    "2026",
+    "06",
+    "08",
+    "rollout-session-1.jsonl",
+  );
+  await writeEnsured(
+    transcriptPath,
+    `${JSON.stringify(started("turn-a"))}\n${JSON.stringify(prompt())}\n`,
+  );
+  return transcriptPath;
+}
+
+async function submitTurn(workspace: Workspace): Promise<void> {
+  const transcriptPath = await writeTranscript(workspace);
+  await handleUserPromptSubmit(
+    payload(workspace, {
+      hook_event_name: "UserPromptSubmit",
+      turn_id: "turn-a",
+      transcript_path: transcriptPath,
+    }),
+    {
+      env: env(workspace),
+      cwd: workspace.repo,
+    },
+  );
+}
+
 function openDatabase(pluginDataDir: string): DatabaseSync {
   const databasePath = getDatabasePath({ pluginDataDir });
   return new DatabaseSync(databasePath, { open: true });
@@ -57,6 +112,7 @@ describe("SQLite storage", () => {
     await handleSessionStart(
       payload(workspace, {
         hook_event_name: "SessionStart",
+        source: "startup",
       }),
       {
         env: env(workspace),
@@ -75,8 +131,9 @@ describe("SQLite storage", () => {
             SELECT name
             FROM sqlite_master
             WHERE type = 'table' AND name IN (
-              'session_state',
-              'session_loaded_guidance',
+              'session_cursor',
+              'turn_guidance',
+              'turn_node',
               'guidance_root_cache'
             )
             ORDER BY name
@@ -84,11 +141,12 @@ describe("SQLite storage", () => {
         )
         .all() as Array<{ name?: unknown }>;
 
-      expect(version?.user_version).toBe(1);
+      expect(version?.user_version).toBe(2);
       expect(tables).toEqual([
         { name: "guidance_root_cache" },
-        { name: "session_loaded_guidance" },
-        { name: "session_state" },
+        { name: "session_cursor" },
+        { name: "turn_guidance" },
+        { name: "turn_node" },
       ]);
     } finally {
       database.close();
@@ -116,6 +174,7 @@ describe("SQLite storage", () => {
     const result = await handleSessionStart(
       payload(workspace, {
         hook_event_name: "SessionStart",
+        source: "startup",
       }),
       {
         env: env(workspace),
@@ -123,7 +182,8 @@ describe("SQLite storage", () => {
       },
     );
 
-    expect(result).toEqual({ exitCode: 0, stdout: "", stderr: "" });
+    expect(result.stdout).toContain('"hookEventName":"SessionStart"');
+    expect(result.stdout).toContain("user:preferences.md");
 
     const reopened = openDatabase(workspace.pluginData);
     try {
@@ -135,7 +195,7 @@ describe("SQLite storage", () => {
           `
             SELECT name
             FROM sqlite_master
-            WHERE type = 'table' AND name = 'session_state'
+            WHERE type = 'table' AND name = 'turn_node'
           `,
         )
         .get() as { name?: unknown } | undefined;
@@ -149,6 +209,7 @@ describe("SQLite storage", () => {
 
   it("supports multiple sequential hook invocations against the same database file", async () => {
     const workspace = await tempWorkspace();
+    await submitTurn(workspace);
     await writeEnsured(
       path.join(workspace.home, ".codex", "guidance", "preferences.md"),
       "# Preferences\n",
@@ -161,6 +222,7 @@ describe("SQLite storage", () => {
     const sessionStart = await handleSessionStart(
       payload(workspace, {
         hook_event_name: "SessionStart",
+        source: "startup",
       }),
       {
         env: env(workspace),
@@ -170,6 +232,7 @@ describe("SQLite storage", () => {
     const read = await handlePostToolUse(
       payload(workspace, {
         hook_event_name: "PostToolUse",
+        turn_id: "turn-a",
         tool_name: "Read",
         tool_input: {
           path: "src/server/api.ts",
@@ -190,16 +253,13 @@ describe("SQLite storage", () => {
         .prepare(
           `
             SELECT guidance_id
-            FROM session_loaded_guidance
-            WHERE session_id = 'session-1' AND generation = 0
+            FROM turn_guidance
+            WHERE turn_id = 'turn-a'
             ORDER BY guidance_id
           `,
         )
         .all() as Array<{ guidance_id?: unknown }>;
-      expect(loaded).toEqual([
-        { guidance_id: "codex:backend.md" },
-        { guidance_id: "user:preferences.md" },
-      ]);
+      expect(loaded).toEqual([{ guidance_id: "codex:backend.md" }]);
     } finally {
       database.close();
     }

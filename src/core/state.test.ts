@@ -3,14 +3,17 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "../test_support";
 
 import { getDatabasePath } from "./sqlite";
 import {
-  compactSessionState,
-  loadSessionState,
-  markGuidanceLoaded,
-  selectUnloadedGuidance,
+  ensureCompactTurnNode,
+  ensureTurnNode,
+  markGuidanceLoadedOnTurn,
+  markTurnCompleted,
+  resolveCurrentTurnId,
+  selectLoadedGuidanceForTurn,
+  selectUnloadedGuidanceForTurn,
 } from "./state";
 import type { GuidanceDocument } from "./types";
 
@@ -34,176 +37,245 @@ function openDatabase(pluginDataDir: string): DatabaseSync {
   return new DatabaseSync(getDatabasePath({ pluginDataDir }));
 }
 
-describe("session state", () => {
-  it("creates a default state for new sessions", async () => {
+describe("turn-tree state", () => {
+  it("sanitizes session IDs before storing cursors in SQLite", async () => {
     const pluginDataDir = await tempDir("codex-guidance-state-");
 
-    const state = await loadSessionState({
-      sessionId: "new-session",
-      pluginDataDir,
-    });
-
-    expect(state).toEqual({
-      generation: 0,
-      loaded: {
-        "0": [],
-      },
-    });
-  });
-
-  it("sanitizes session IDs before storing them in SQLite", async () => {
-    const pluginDataDir = await tempDir("codex-guidance-state-");
-
-    const result = await markGuidanceLoaded({
+    const result = await ensureTurnNode({
       sessionId: "../unsafe/session",
       pluginDataDir,
-      guidanceIds: ["codex:a.md"],
+      turnId: "turn-a",
+      parentTurnId: null,
     });
 
     expect(result.ok).toBe(true);
     const database = openDatabase(pluginDataDir);
     try {
-      const sessions = database
-        .prepare("SELECT session_id FROM session_state")
-        .all() as Array<{ session_id?: unknown }>;
-      expect(sessions).toEqual([{ session_id: "unsafe-session" }]);
+      const cursors = database
+        .prepare("SELECT session_id, current_turn_id FROM session_cursor")
+        .all() as Array<{ session_id?: unknown; current_turn_id?: unknown }>;
+      expect(cursors).toEqual([
+        { session_id: "unsafe-session", current_turn_id: "turn-a" },
+      ]);
     } finally {
       database.close();
     }
   });
 
-  it("throws when PLUGIN_DATA is unavailable", () => {
-    const previousPluginData = process.env.PLUGIN_DATA;
-    delete process.env.PLUGIN_DATA;
-    try {
-      expect(() => getDatabasePath({})).toThrow("PLUGIN_DATA is required");
-    } finally {
-      if (previousPluginData === undefined) {
-        delete process.env.PLUGIN_DATA;
-      } else {
-        process.env.PLUGIN_DATA = previousPluginData;
-      }
-    }
+  it("creates user turns that inherit parent generation", async () => {
+    const pluginDataDir = await tempDir("codex-guidance-state-");
+
+    const root = await ensureTurnNode({
+      sessionId: "session-1",
+      pluginDataDir,
+      turnId: "turn-a",
+      parentTurnId: null,
+    });
+    const child = await ensureTurnNode({
+      sessionId: "session-1",
+      pluginDataDir,
+      turnId: "turn-b",
+      parentTurnId: "turn-a",
+    });
+
+    expect(root).toMatchObject({ ok: true });
+    expect(child).toMatchObject({
+      ok: true,
+      turn: {
+        turnId: "turn-b",
+        parentTurnId: "turn-a",
+        generation: 0,
+        kind: "user",
+        status: "active",
+      },
+    });
+    expect(
+      await resolveCurrentTurnId({
+        sessionId: "session-1",
+        pluginDataDir,
+      }),
+    ).toBe("turn-b");
   });
 
-  it("records loaded guidance only for the current generation", async () => {
+  it("increments generation at compact boundaries and inherits it afterward", async () => {
     const pluginDataDir = await tempDir("codex-guidance-state-");
-    const documents = [doc("codex:a.md"), doc("codex:b.md")];
+    await ensureTurnNode({
+      sessionId: "session-1",
+      pluginDataDir,
+      turnId: "turn-a",
+      parentTurnId: null,
+    });
+
+    const compact = await ensureCompactTurnNode({
+      sessionId: "session-1",
+      pluginDataDir,
+      turnId: "compact-1",
+      parentTurnId: "turn-a",
+      complete: true,
+    });
+    const afterCompact = await ensureTurnNode({
+      sessionId: "session-1",
+      pluginDataDir,
+      turnId: "turn-b",
+      parentTurnId: "compact-1",
+    });
+
+    expect(compact).toMatchObject({
+      ok: true,
+      turn: {
+        generation: 1,
+        kind: "compact",
+        status: "completed",
+      },
+    });
+    expect(afterCompact).toMatchObject({
+      ok: true,
+      turn: {
+        generation: 1,
+        kind: "user",
+      },
+    });
+  });
+
+  it("loads guidance from same-generation ancestors only", async () => {
+    const pluginDataDir = await tempDir("codex-guidance-state-");
+    await ensureTurnNode({
+      sessionId: "session-1",
+      pluginDataDir,
+      turnId: "turn-a",
+      parentTurnId: null,
+    });
+    await markGuidanceLoadedOnTurn({
+      sessionId: "session-1",
+      pluginDataDir,
+      turnId: "turn-a",
+      guidanceIds: ["codex:before.md"],
+    });
+    await ensureCompactTurnNode({
+      sessionId: "session-1",
+      pluginDataDir,
+      turnId: "compact-1",
+      parentTurnId: "turn-a",
+      complete: true,
+    });
+    await ensureTurnNode({
+      sessionId: "session-1",
+      pluginDataDir,
+      turnId: "turn-b",
+      parentTurnId: "compact-1",
+    });
+    await markGuidanceLoadedOnTurn({
+      sessionId: "session-1",
+      pluginDataDir,
+      turnId: "turn-b",
+      guidanceIds: ["codex:after.md"],
+    });
+    await ensureTurnNode({
+      sessionId: "session-1",
+      pluginDataDir,
+      turnId: "turn-c",
+      parentTurnId: "turn-b",
+    });
 
     expect(
-      selectUnloadedGuidance({
-        state: { generation: 0, loaded: { "0": ["codex:a.md"] } },
-        documents,
-      }).map((guidance) => guidance.id),
-    ).toEqual(["codex:b.md"]);
-
-    const result = await markGuidanceLoaded({
-      sessionId: "loaded-session",
-      pluginDataDir,
-      guidanceIds: ["codex:a.md", "codex:b.md", "codex:a.md"],
-    });
-
-    expect(result.ok).toBe(true);
-    if (!result.ok) {
-      throw new Error(result.reason);
-    }
-    expect(result.state).toEqual({
-      generation: 0,
-      loaded: {
-        "0": ["codex:a.md", "codex:b.md"],
-      },
-    });
+      await selectLoadedGuidanceForTurn({
+        sessionId: "session-1",
+        pluginDataDir,
+        turnId: "turn-c",
+      }),
+    ).toEqual(["codex:after.md"]);
+    expect(
+      await selectUnloadedGuidanceForTurn({
+        sessionId: "session-1",
+        pluginDataDir,
+        turnId: "turn-c",
+        documents: [doc("codex:before.md"), doc("codex:after.md")],
+      }),
+    ).toEqual([doc("codex:before.md")]);
   });
 
-  it("increments generation during compact and treats missing current-generation rows as empty", async () => {
+  it("does not inherit guidance from rolled-back sibling turns", async () => {
     const pluginDataDir = await tempDir("codex-guidance-state-");
-    await markGuidanceLoaded({
-      sessionId: "compact-session",
+    await ensureTurnNode({
+      sessionId: "source-session",
       pluginDataDir,
-      guidanceIds: ["codex:a.md"],
+      turnId: "turn-a",
+      parentTurnId: null,
+    });
+    await ensureTurnNode({
+      sessionId: "source-session",
+      pluginDataDir,
+      turnId: "turn-b",
+      parentTurnId: "turn-a",
+    });
+    await markGuidanceLoadedOnTurn({
+      sessionId: "source-session",
+      pluginDataDir,
+      turnId: "turn-b",
+      guidanceIds: ["codex:sibling.md"],
+    });
+    await ensureTurnNode({
+      sessionId: "fork-session",
+      pluginDataDir,
+      turnId: "turn-c",
+      parentTurnId: "turn-a",
     });
 
-    const result = await compactSessionState({
-      sessionId: "compact-session",
-      pluginDataDir,
-    });
-
-    expect(result.ok).toBe(true);
-    if (!result.ok) {
-      throw new Error(result.reason);
-    }
-    expect(result.state).toEqual({
-      generation: 1,
-      loaded: {
-        "0": ["codex:a.md"],
-        "1": [],
-      },
-    });
+    expect(
+      await selectLoadedGuidanceForTurn({
+        sessionId: "fork-session",
+        pluginDataDir,
+        turnId: "turn-c",
+      }),
+    ).toEqual([]);
   });
 
-  it("persists state into SQLite without temp-file bookkeeping", async () => {
+  it("marks turns complete without changing the session cursor", async () => {
     const pluginDataDir = await tempDir("codex-guidance-state-");
-
-    await markGuidanceLoaded({
-      sessionId: "atomic-session",
+    await ensureTurnNode({
+      sessionId: "session-1",
       pluginDataDir,
-      guidanceIds: ["codex:a.md"],
+      turnId: "turn-a",
+      parentTurnId: null,
     });
 
-    const database = openDatabase(pluginDataDir);
-    try {
-      const session = database
-        .prepare(
-          "SELECT generation FROM session_state WHERE session_id = 'atomic-session'",
-        )
-        .get() as { generation?: unknown } | undefined;
-      const loaded = database
-        .prepare(
-          `
-            SELECT guidance_id
-            FROM session_loaded_guidance
-            WHERE session_id = 'atomic-session' AND generation = 0
-          `,
-        )
-        .all() as Array<{ guidance_id?: unknown }>;
-
-      expect(session).toEqual({ generation: 0 });
-      expect(loaded).toEqual([{ guidance_id: "codex:a.md" }]);
-    } finally {
-      database.close();
-    }
-  });
-
-  it("fails open when the database cannot be opened", async () => {
-    const pluginDataDir = await tempDir("codex-guidance-state-");
-
-    const load = await loadSessionState({
-      sessionId: "broken-session",
-      pluginDataDir: path.join(pluginDataDir, "missing", "child"),
+    const result = await markTurnCompleted({
+      sessionId: "session-1",
+      pluginDataDir,
+      turnId: "turn-a",
     });
-    expect(load).toEqual({
-      generation: 0,
-      loaded: {
-        "0": [],
+
+    expect(result).toMatchObject({
+      ok: true,
+      turn: {
+        status: "completed",
       },
     });
+    expect(
+      await resolveCurrentTurnId({
+        sessionId: "session-1",
+        pluginDataDir,
+      }),
+    ).toBe("turn-a");
   });
 
   it("returns lock-timeout when a write transaction cannot acquire the SQLite lock quickly", async () => {
     const pluginDataDir = await tempDir("codex-guidance-state-");
-    await markGuidanceLoaded({
-      sessionId: "locked-session",
+    await ensureTurnNode({
+      sessionId: "session-1",
       pluginDataDir,
-      guidanceIds: ["codex:init.md"],
+      turnId: "turn-a",
+      parentTurnId: null,
     });
 
     const holder = openDatabase(pluginDataDir);
     try {
       holder.exec("BEGIN IMMEDIATE");
 
-      const result = await markGuidanceLoaded({
-        sessionId: "locked-session",
+      const result = await markGuidanceLoadedOnTurn({
+        sessionId: "session-1",
         pluginDataDir,
+        turnId: "turn-a",
         guidanceIds: ["codex:a.md"],
         lockTimeoutMs: 20,
         lockRetryMs: 1,

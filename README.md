@@ -6,10 +6,11 @@ It provides Claude Code-style path-scoped rules, but uses the name `guidance` to
 
 ## What It Does
 
-- Loads global guidance at session start.
+- Loads global guidance at session start, `/clear`, and compaction; skips resume.
 - Loads path-scoped guidance after matching file reads.
 - Loads path-scoped guidance before matching edits, denies the first edit, and asks Codex to retry after seeing the guidance.
-- Resets loaded guidance state after compaction so guidance can be reloaded for the next context generation.
+- Tracks loaded guidance on Codex turn IDs, so rewind, fork, and compaction inherit only guidance still visible in the current model context.
+- Treats compaction as a generation boundary so pre-compaction guidance can be reloaded when needed.
 - Stores session state and guidance cache in a SQLite database under `PLUGIN_DATA` for faster repeated hook runs and safer concurrent access.
 
 ## Installation
@@ -51,7 +52,7 @@ Files without front matter are global guidance:
 Use concise explanations and preserve local style.
 ```
 
-Files with `paths` are path-scoped guidance:
+Files with a `paths` front matter block are path-scoped guidance:
 
 ```markdown
 ---
@@ -62,10 +63,10 @@ paths:
 
 # TypeScript
 
-Prefer strict types and focused Vitest coverage.
+Prefer strict types and focused native test coverage.
 ```
 
-Only the `paths` front matter field is supported. Front matter is stripped before guidance is injected.
+Only a narrow `paths` block-list front matter format is supported. The parser accepts unquoted, single-quoted, and double-quoted list items, and rejects broader YAML features such as inline arrays or additional keys. Front matter is stripped before guidance is injected.
 
 ## Development
 
@@ -77,7 +78,7 @@ Install dependencies:
 npm install
 ```
 
-Build compiled hook scripts:
+Build the committed runtime JS under `scripts/`:
 
 ```bash
 npm run build
@@ -87,5 +88,6 @@ Run checks:
 
 ```bash
 npm run typecheck
-npm test -- --run
+npm run build
+npm test
 ```

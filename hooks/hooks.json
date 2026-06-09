@@ -2,15 +2,28 @@
   "hooks": {
     "SessionStart": [
       {
-        "matcher": "*",
+        "matcher": "startup|clear|compact",
         "hooks": [
           {
             "type": "command",
-            "command": "node ${PLUGIN_ROOT}/scripts/session_start.js"
+            "command": "node ${PLUGIN_ROOT}/scripts/hook_entry.js --hook session_start"
           }
         ],
         "description": "Load global Codex guidance at session start",
         "id": "codex-guidance:session-start"
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node ${PLUGIN_ROOT}/scripts/hook_entry.js --hook user_prompt_submit"
+          }
+        ],
+        "description": "Record the active Codex turn for guidance inheritance",
+        "id": "codex-guidance:user-prompt-submit"
       }
     ],
     "PostToolUse": [
@@ -19,7 +32,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node ${PLUGIN_ROOT}/scripts/post_tool_use.js"
+            "command": "node ${PLUGIN_ROOT}/scripts/hook_entry.js --hook post_tool_use"
           }
         ],
         "description": "Load path-scoped Codex guidance after matching reads",
@@ -32,11 +45,24 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node ${PLUGIN_ROOT}/scripts/pre_tool_use.js"
+            "command": "node ${PLUGIN_ROOT}/scripts/hook_entry.js --hook pre_tool_use"
           }
         ],
         "description": "Load path-scoped Codex guidance before matching edits",
         "id": "codex-guidance:pre-tool-use"
+      }
+    ],
+    "PreCompact": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node ${PLUGIN_ROOT}/scripts/hook_entry.js --hook pre_compact"
+          }
+        ],
+        "description": "Prepare a Codex guidance compact boundary",
+        "id": "codex-guidance:pre-compact"
       }
     ],
     "PostCompact": [
@@ -45,11 +71,24 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node ${PLUGIN_ROOT}/scripts/post_compact.js"
+            "command": "node ${PLUGIN_ROOT}/scripts/hook_entry.js --hook post_compact"
           }
         ],
-        "description": "Advance Codex guidance generation after compaction",
+        "description": "Complete a Codex guidance compact boundary",
         "id": "codex-guidance:post-compact"
+      }
+    ],
+    "Stop": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node ${PLUGIN_ROOT}/scripts/hook_entry.js --hook stop"
+          }
+        ],
+        "description": "Mark the active Codex guidance turn complete",
+        "id": "codex-guidance:stop"
       }
     ]
   }

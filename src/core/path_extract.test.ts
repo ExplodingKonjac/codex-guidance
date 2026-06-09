@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "../test_support";
 
 import { extractToolPaths } from "./path_extract";
 
